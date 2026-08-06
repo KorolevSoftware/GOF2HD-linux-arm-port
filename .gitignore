@@ -1,0 +1,17 @@
+# Original game archive (1GB) - kept on disk, not tracked
+net.fishlabs.gof2hdallandroid2012.rar
+
+# Build artifacts
+port/run/
+port/run-hf/
+port/run-native/
+port/shim/*.so
+port/gles-stub/*.so
+port/fmodex-stub/*.so
+port/host/gof2hd
+port/host/gof2hd-sdl
+port/viewer/gof2hd-viewer
+
+# Scratch
+*.o
+*.raw
