@@ -1,0 +1,77 @@
+#!/bin/sh
+# GOF2HD: запуск одной командой.
+# 1) закрывает лаунчер консоли (он держит GPU/fb0)
+# 2) поднимает демон виртуального геймпада (pad-server), если его нет
+# 3) убивает старую копию игры, если висит
+# 4) запускает игру в фоне и показывает лог
+
+set -e
+
+GOF_ROOT="${GOF_ROOT:-/root/gof2hd}"
+RUN_DIR="$GOF_ROOT/port/run-native"
+PAD_DIR="$GOF_ROOT/port/pad"
+LOG_FILE="${GOF_LOG:-$GOF_ROOT/run.txt}"
+WIDTH="${GOF_WIDTH:-640}"
+HEIGHT="${GOF_HEIGHT:-480}"
+
+APK="$GOF_ROOT/base.apk"
+OBB=$(ls "$GOF_ROOT"/obb/*/main.*.obb "$GOF_ROOT"/obb/main.*.obb 2>/dev/null | head -1)
+DATA="$GOF_ROOT/data"
+
+echo "== GOF2HD launcher =="
+
+# 1) лаунчер прошьвки (dmenu/retroarch) держит fb0 и GPU
+if pgrep -f 'dmenu.bin|muos.bin|loadapp' >/dev/null 2>&1; then
+    echo "[1] останавливаю лаунчер консоли..."
+    /etc/init.d/launcher.sh stop >/dev/null 2>&1 || true
+    sleep 1
+fi
+
+# 2) демон виртуального геймпада (uinput, UDP:4444)
+if pgrep -x pad-server >/dev/null 2>&1; then
+    echo "[2] pad-server уже запущен"
+else
+    echo "[2] поднимаю pad-server..."
+    cd "$PAD_DIR"
+    setsid ./pad-server >"$GOF_ROOT/pad.log" 2>&1 </dev/null &
+    sleep 1
+    if pgrep -f 'pad-server' >/dev/null 2>&1; then
+        echo "    pad-server PID $(pgrep -f pad-server | head -1)"
+    else
+        echo "    pad-server не запустился, смотри $GOF_ROOT/pad.log" >&2
+    fi
+fi
+
+# 3) убить старый инстанс игры
+OLD=$(pgrep -f '/root/gof2hd/base.apk' || true)
+if [ -n "$OLD" ]; then
+    echo "[3] убиваю старую игру: $OLD"
+    kill $OLD 2>/dev/null || true
+    sleep 1
+fi
+
+if [ -z "$OBB" ]; then
+    echo "не найден main.*.obb в $GOF_ROOT/obb" >&2
+    exit 1
+fi
+
+# 4) запуск
+echo "[4] запускаю игру"
+cd "$RUN_DIR"
+export GOF_FB=/dev/fb0
+export GOF_SHOW_CURSOR=1
+export LD_LIBRARY_PATH=.:/usr/lib32
+: > "$LOG_FILE"
+setsid ./gof2hd "$APK" "$OBB" "$DATA" "$WIDTH" "$HEIGHT" >"$LOG_FILE" 2>&1 </dev/null &
+
+sleep 3
+PID=$(pgrep -f '/root/gof2hd/base.apk' || true)
+if [ -n "$PID" ]; then
+    echo "== игра запущена: PID $PID =="
+    echo "лог: $LOG_FILE  (следить: tail -f $LOG_FILE)"
+    echo "геймпад с ПК: python3 pad-client.py --host 192.168.0.128"
+else
+    echo "== игра не поднялась, лог: ==" 1>&2
+    tail -20 "$LOG_FILE" 1>&2
+    exit 1
+fi

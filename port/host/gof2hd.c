@@ -20,6 +20,7 @@
 #include <execinfo.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <errno.h>
 
 /* Avoid glibc's __isoc23_sscanf (needs GLIBC_2.38, absent on device glibc 2.37) */
@@ -144,6 +145,7 @@ static void (*p_resetScreenshotFlag)(JNIEnv*, jclass);
 static void (*p_handleTouchEvent)(JNIEnv*, jclass, jint, jint, jint, jint);
 static void (*p_handleAccelerometer)(JNIEnv*, jclass, jfloat, jfloat, jfloat);
 static void (*p_setOrigamiSuperClub)(JNIEnv*, jclass, jstring);
+static void (*p_backbutton_fn)(JNIEnv*, jclass);
 
 static int g_width = 640;
 static int g_height = 480;
@@ -282,6 +284,8 @@ static int setup_egl(void) {
     return 0;
 }
 
+static void draw_cursor_on_fb(void);
+
 static void swap_egl(void) {
     static void (*q_glReadPixels)(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void*);
     static void (*q_glClearColor)(float, float, float, float);
@@ -322,6 +326,7 @@ static void swap_egl(void) {
     }
     if (g_egl_surface && q_eglSwapBuffers)
         q_eglSwapBuffers(g_egl_display, g_egl_surface);
+    draw_cursor_on_fb();
 }
 
 /* ---- mouse -> touch bridge (host side viewer writes /tmp/gof2hd_touch) ---- */
@@ -349,6 +354,112 @@ static void pump_touch(JNIEnv* env, jclass cls) {
             if (getenv("GOF_VERBOSE_JNI"))
                 fprintf(stderr, "[host] touch pid=%d act=%d x=%d y=%d\n", pid, action, x, y);
             p_handleTouchEvent(env, cls, pid, action, x, y);
+        }
+    }
+}
+
+/* ---- virtual gamepad -> touch/back bridge (uinput device on host) ---- */
+#include <linux/input.h>
+#include <poll.h>
+#include <sys/ioctl.h>
+
+#define PAD_DEV "/dev/input/event4"   /* GOF2HD Virtual Gamepad; see tools/pad-server */
+
+static int g_pad_fd = -1;
+static int g_pad_x = 320, g_pad_y = 240;   /* virtual finger */
+static int g_pad_down = 0;                 /* BTN_A held */
+
+static int open_pad(void) {
+    int fd = open(PAD_DEV, O_RDONLY | O_NONBLOCK);
+    if (fd < 0) {
+        /* try to find it by name */
+        for (int i = 0; i < 8; i++) {
+            char path[32];
+            snprintf(path, sizeof(path), "/dev/input/event%d", i);
+            int f2 = open(path, O_RDONLY | O_NONBLOCK);
+            if (f2 < 0) continue;
+            char name[128] = "";
+            if (ioctl(f2, EVIOCGNAME(sizeof(name)), name) >= 0 &&
+                strstr(name, "GOF2HD Virtual Gamepad")) {
+                fd = f2;
+                fprintf(stderr, "[pad] found %s at %s\n", name, path);
+                break;
+            }
+            close(f2);
+        }
+    }
+    return fd;
+}
+
+static void pad_move(int dx, int dy) {
+    g_pad_x += dx; g_pad_y += dy;
+    if (g_pad_x < 0) g_pad_x = 0;
+    if (g_pad_y < 0) g_pad_y = 0;
+    if (g_pad_x >= g_width) g_pad_x = g_width - 1;
+    if (g_pad_y >= g_height) g_pad_y = g_height - 1;
+}
+
+static void pump_pad(JNIEnv* env, jclass cls) {
+    if (g_pad_fd < 0) return;
+    struct input_event ev;
+    while (read(g_pad_fd, &ev, sizeof(ev)) == sizeof(ev)) {
+        if (ev.type != EV_KEY && ev.type != EV_ABS) continue;
+        int code = ev.code;
+        int val = ev.value;
+        if (ev.type == EV_ABS && code == ABS_X) { g_pad_x = (val + 32768) * g_width / 65536; continue; }
+        if (ev.type == EV_ABS && code == ABS_Y) { g_pad_y = (val + 32768) * g_height / 65536; continue; }
+        if (ev.type != EV_KEY || val < 0) continue;
+        switch (code) {
+        case BTN_DPAD_UP:    pad_move(0, -10); break;
+        case BTN_DPAD_DOWN:  pad_move(0, +10); break;
+        case BTN_DPAD_LEFT:  pad_move(-10, 0); break;
+        case BTN_DPAD_RIGHT: pad_move(+10, 0); break;
+        case BTN_A:
+            if (val && !g_pad_down) {
+                g_pad_down = 1;
+                p_handleTouchEvent(env, cls, 722, 0, g_pad_x, g_pad_y);
+                fprintf(stderr, "[pad] touch down %d,%d\n", g_pad_x, g_pad_y);
+            } else if (!val && g_pad_down) {
+                g_pad_down = 0;
+                p_handleTouchEvent(env, cls, 722, 1, g_pad_x, g_pad_y);
+                fprintf(stderr, "[pad] touch up %d,%d\n", g_pad_x, g_pad_y);
+            }
+            break;
+        case BTN_B:
+            if (val && p_backbutton_fn) {
+                fprintf(stderr, "[pad] back\n");
+                p_backbutton_fn(env, cls);
+            }
+            break;
+        }
+    }
+}
+
+/* draw a crosshair at the virtual gamepad cursor position directly into the
+ * framebuffer. GOF_FB is 640x480 BGRA (libmali surface). */
+static int g_cursor_fb = -1;
+static unsigned char* g_cursor_map = NULL;
+
+static void draw_cursor_on_fb(void) {
+    if (!getenv("GOF_SHOW_CURSOR")) return;
+    if (g_cursor_fb < 0) {
+        const char* p = getenv("GOF_FB");
+        g_cursor_fb = open(p ? p : "/dev/fb0", O_RDWR);
+        if (g_cursor_fb >= 0)
+            g_cursor_map = mmap(NULL, g_width * g_height * 4,
+                                PROT_READ | PROT_WRITE, MAP_SHARED, g_cursor_fb, 0);
+    }
+    if (!g_cursor_map) return;
+    int cx = g_pad_x, cy = g_pad_y;
+    if (cx < 0 || cy < 0 || cx >= g_width || cy >= g_height) return;
+    for (int i = -12; i <= 12; i++) {
+        for (int t = 0; t < 3; t++) {
+            int x1 = cx + i, y1 = cy - t + 1;
+            int x2 = cx - t + 1, y2 = cy + i;
+            unsigned char* p1 = g_cursor_map + ((size_t)y1 * g_width + x1) * 4;
+            unsigned char* p2 = g_cursor_map + ((size_t)y2 * g_width + x2) * 4;
+            if (x1 >= 0 && x1 < g_width && y1 >= 0 && y1 < g_height) { p1[2]=255; p1[1]=80; p1[0]=80; }
+            if (x2 >= 0 && x2 < g_width && y2 >= 0 && y2 < g_height) { p2[2]=255; p2[1]=80; p2[0]=80; }
         }
     }
 }
@@ -406,6 +517,9 @@ int main(int argc, char** argv) {
     SYM(p_resetScreenshotFlag, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_resetScreenshotFlag");
     SYM(p_handleTouchEvent, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_handleTouchEvent");
     SYM(p_handleAccelerometer, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_handleAccelerometer");
+    /* optional; Java wrapper calls this on Android back button */
+    p_backbutton_fn = (typeof(p_backbutton_fn))
+        dlsym(h, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_BackButtonPressed");
     /* optional; Java wrapper calls this with the origami super club key string */
     p_setOrigamiSuperClub = (typeof(p_setOrigamiSuperClub))
         dlsym(h, "Java_net_fishlabs_gof2hdallandroid2012_GOF2HD2012_SetOrigamiSuperClub");
@@ -451,10 +565,16 @@ int main(int argc, char** argv) {
     printf("[host] render loop started\n");
     snapshot_maps();
     open_touch_fifo();
+    g_pad_fd = open_pad();
+    if (g_pad_fd >= 0)
+        fprintf(stderr, "[pad] virtual gamepad connected\n");
+    else
+        fprintf(stderr, "[pad] no virtual gamepad (pad-server not running?)\n");
     int frames = 0;
     while (1) {
         long t0 = now_ms();
         pump_touch(env, cls);
+        pump_pad(env, cls);
         p_renderstep(env, cls, t0);
         swap_egl();
         frames++;
