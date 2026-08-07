@@ -1,15 +1,13 @@
 #!/bin/sh
 # GOF2HD: запуск одной командой.
 # 1) закрывает лаунчер консоли (он держит GPU/fb0)
-# 2) поднимает демон виртуального геймпада (pad-server), если его нет
-# 3) убивает старую копию игры, если висит
-# 4) запускает игру в фоне и показывает лог
+# 2) убивает старую копию игры, если висит
+# 3) запускает игру в фоне и показывает лог
 
 set -e
 
 GOF_ROOT="${GOF_ROOT:-/root/gof2hd}"
 RUN_DIR="$GOF_ROOT/port/run-native"
-PAD_DIR="$GOF_ROOT/port/pad"
 LOG_FILE="${GOF_LOG:-$GOF_ROOT/run.txt}"
 WIDTH="${GOF_WIDTH:-640}"
 HEIGHT="${GOF_HEIGHT:-480}"
@@ -27,25 +25,10 @@ if pgrep -f 'dmenu.bin|muos.bin|loadapp' >/dev/null 2>&1; then
     sleep 1
 fi
 
-# 2) демон виртуального геймпада (uinput, UDP:4444)
-if pgrep -x pad-server >/dev/null 2>&1; then
-    echo "[2] pad-server уже запущен"
-else
-    echo "[2] поднимаю pad-server..."
-    cd "$PAD_DIR"
-    setsid ./pad-server >"$GOF_ROOT/pad.log" 2>&1 </dev/null &
-    sleep 1
-    if pgrep -f 'pad-server' >/dev/null 2>&1; then
-        echo "    pad-server PID $(pgrep -f pad-server | head -1)"
-    else
-        echo "    pad-server не запустился, смотри $GOF_ROOT/pad.log" >&2
-    fi
-fi
-
-# 3) убить старый инстанс игры
+# 2) убить старый инстанс игры
 OLD=$(pgrep -f '/root/gof2hd/base.apk' || true)
 if [ -n "$OLD" ]; then
-    echo "[3] убиваю старую игру: $OLD"
+    echo "[2] убиваю старую игру: $OLD"
     kill $OLD 2>/dev/null || true
     sleep 1
 fi
@@ -55,8 +38,8 @@ if [ -z "$OBB" ]; then
     exit 1
 fi
 
-# 4) запуск
-echo "[4] запускаю игру"
+# 3) запуск
+echo "[3] запускаю игру"
 cd "$RUN_DIR"
 export GOF_FB=/dev/fb0
 export GOF_SHOW_CURSOR=1
@@ -71,7 +54,7 @@ PID=$(pgrep -f '/root/gof2hd/base.apk' || true)
 if [ -n "$PID" ]; then
     echo "== игра запущена: PID $PID =="
     echo "лог: $LOG_FILE  (следить: tail -f $LOG_FILE)"
-    echo "геймпад с ПК: python3 pad-client.py --host 192.168.0.128"
+    echo "управление: встроенный геймпад консоли (стик/крестовина - курсор, A - тап, B - назад)"
 else
     echo "== игра не поднялась, лог: ==" 1>&2
     tail -20 "$LOG_FILE" 1>&2
