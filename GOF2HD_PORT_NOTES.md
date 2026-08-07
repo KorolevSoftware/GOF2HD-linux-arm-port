@@ -19,10 +19,8 @@ ARM-процессором, используя аппаратный GPU (Mali) �
 | **libc shim** | `shim/shim.c`, `abi.c`, `sscanf.c` | Экспортирует bionic-символы `@LIBC`, форвардит в glibc |
 | **libm shim** | `shim/libm.c`, `libm.map` | Math-символы `@LIBC` (acosf/sinf/sqrtf...) |
 | **GLES bridge** | `gles-stub/gles-bridge.c` | Мост softfp→hardfp для libmali |
-| **GLES stub (soft)** | `gles-stub/gles-stub.c` | Программный GLES2 (резервный) |
 | **fmod stubs** | `fmodex-stub/` | Заглушки аудио FMOD |
 | **Сборка** | `tools/build-native.sh` | Нативная сборка на устройстве |
-| **viewer** | `viewer/viewer.c` | SDL-окно для хоста x86_64 |
 
 ## 3. Как игра работает (механика запуска)
 
