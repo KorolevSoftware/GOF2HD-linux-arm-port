@@ -30,30 +30,6 @@
 #include <sys/mman.h>
 #include <errno.h>
 
-/* Avoid glibc's __isoc23_sscanf (needs GLIBC_2.38, absent on device glibc 2.37) */
-#include <stdarg.h>
-static int legacy_sscanf(const char* s, const char* fmt, ...) {
-    /* only "%d %d %d %d" is used for touch parsing; maps path is unused */
-    if (!strcmp(fmt, "%d %d %d %d")) {
-        va_list ap; va_start(ap, fmt);
-        int* a = va_arg(ap, int*); int* b = va_arg(ap, int*);
-        int* c = va_arg(ap, int*); int* d = va_arg(ap, int*);
-        va_end(ap);
-        const char* p = s; int r = 0;
-        for (int i = 0; i < 4; i++) {
-            char* end;
-            long v = strtoul(p, &end, 10);
-            if (end == p) break;
-            if (i==0)*a=(int)v; else if(i==1)*b=(int)v; else if(i==2)*c=(int)v; else *d=(int)v;
-            r++;
-            p = end; while (*p==' ') p++;
-        }
-        return r;
-    }
-    return 0;
-}
-#define sscanf legacy_sscanf
-
 /* ---- crash handler ---- */
 static void crash_handler(int sig, siginfo_t* si, void* uc) {
     ucontext_t* u = (ucontext_t*)uc;
