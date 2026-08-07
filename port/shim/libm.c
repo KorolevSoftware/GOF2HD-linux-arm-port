@@ -1,14 +1,14 @@
 /*
  * libm.c — bionic libm shim for GOF2HD on hardfp ARM.
  *
- * The engine (softfp/pcs aapcs, floats in r0-r3) imports math symbols
- * versioned @LIBC from libm.so: acosf@LIBC atanf@LIBC cosf@LIBC powf@LIBC
- * rint@LIBC sinf@LIBC sqrtf@LIBC.  glibc libm is hardfp (aapcs-vfp): floats
- * in s0-s15.  Each export here is a pcs("aapcs") softfp entry that forwards
- * through a pcs("aapcs-vfp") pointer resolved with dlsym() from glibc libm.
+ * The engine (softfp/pcs aapcs, floats in r0-r3) imports math symbols from
+ * libm.so: acosf atanf cosf powf rint sinf sqrtf ...  glibc libm is hardfp
+ * (aapcs-vfp): floats in s0-s15.  Each export here is a pcs("aapcs") softfp
+ * entry that forwards through a pcs("aapcs-vfp") pointer resolved with
+ * dlsym() from glibc libm.
  *
  * Build (hardfp): arm-linux-gnueabihf-gcc -mfloat-abi=hard
- *   -shared -fPIC -Wl,--version-script=libm.map libm.c -o libm.so
+ *   -shared -fPIC libm.c -o libm.so
  */
 #include <dlfcn.h>
 

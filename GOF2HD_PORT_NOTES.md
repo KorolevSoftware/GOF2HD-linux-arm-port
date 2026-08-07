@@ -37,7 +37,35 @@
 - Логика: левый стик → курсор (скорость ∝ отклонению, deadzone 4000,
   `SDL_CONTROLLER_AXIS_LEFTX/LEFTY`), крестовина → шаг 10 px,
   A (`b0`) → touch down/up (pid 722), B (`b3`) → BackButtonPressed.
-- Лог: `[pad] mapped/opened ANBERNIC-keys (idx 0)`, `[pad] gamepad ready`.
+- **Гироскоп-режим** (`g_gyro_mode`, тумблер START = `leftshoulder`/idx=9):
+  левый стик эмулирует акселерометр → `Java_..._ToJNI_handleAccelerometer`.
+  Включается кнопкой (START) или env `GOF_GYRO=1`. В режиме гироскопа стик
+  перестаёт двигать курсор (его забирает акселерометр), курсор — только крестовина.
+- Лог: `[pad] mapped/opened ANBERNIC-keys (idx 0)`, `[pad] gamepad ready`,
+  `[pad] gyro mode ON/OFF`.
+
+### Гироскоп-стик: как это работает (реверс)
+
+Движок управляет кораблём от акселерометра: `MGame::handleAccelerometer()`
+читает `Engine::GetAccelValue()` (3 double: X/Y/Z из `SetAccelValue`):
+- **руль** (left/right) — по `accel[1]` (Y), масштаб ×2.5, порог ±1.0 (т.е. ±0.4);
+- **питч** (up/down) — по `accel[2]` (Z): формула `p = f18 - (2-X)` при Z>0,
+  сдвиг на константу; нейтраль = **Z ≈ +1.0** (в оригинале Android шлёт
+  `z/10 ≈ 0.98` при ровном устройстве).
+
+**ABI-ловушка (критично):** движок softfp (float в r0–r3), host hardfp
+(aapcs-vfp, float в s0–s2). Указатель на JNI-функцию с float-аргументами
+обязательно помечать `__attribute__((pcs("aapcs")))` — иначе движок читает
+мусор из r0–r3 и корабль не реагирует вообще. JNI-стаб `handleAccelerometer`
+дополнительно инвертирует первый float: движок видит `SetAccelValue(-a, b, c)`.
+
+**Итоговый маппинг** в `pump_gyro()` (`host/gof2hd.c`), вызывается каждый кадр:
+```
+ax = 0.0f;      // engine X не используется для руля/питча
+ay = -nx;       // engine Y (руль) = -стик X  (стик вправо -> корабль вправо)
+az = 1.0f + ny; // engine Z (питч) = 1.0 + стик Y  (нейтраль Z=1, вверх -> >1)
+```
+Проверено на устройстве: руль и питч работают, в нейтрали корабль летит ровно.
 
 ## 4. Сборка и запуск — 3 команды
 
@@ -142,15 +170,42 @@ SF float acosf(float a) { return gl_acosf(a); }  // вызов через HF-poi
 **Важно о GLES:** движок импортирует **только GLES2-символы** (проверено
 `readelf`; GLES1-функций в UND-списке нет), поэтому в мосте только они + EGL.
 
-## 7. Версии символов (решено)
+## 7. Версии символов и маппинг на glibc (решено: ELF-патч)
 
-Движок импортирует bionic-символы с версией `@LIBC`; glibc навязывает
-pthread-definitions версию `GLIBC_2.4`, блокируя `@@LIBC`-экспорт.
+Движок импортирует bionic-символы с версией `@LIBC`; glibc не имеет такого
+узла. **Решение — гибридный ELF-патч** (`tools/patch-versions.py`).
 
-**Решение:** НЕ включать `<pthread.h>`/`<semaphore.h>`. Типы берутся из
-`<sys/types.h>` (→ `bits/pthreadtypes.h`); `sem_t` определён вручную
-(`shim/types.h`, 16 Б). После этого экспортируются все 79 символов `@LIBC`,
-требуемых игрой (version-script `shim/version.map` / `libm.map`).
+### Как функции попадают в glibc или в shim
+
+После патча каждый импорт движка резолвится ровно одним из двух путей:
+
+1. **`@LIBC` остаётся** у символов, которые предоставляет наш shim:
+   stat/fstat/mktime, FILE-пул (`__sF`, fopen/fread/...), pthread_*,
+   softfp-математика (`sinf` и т.п. через `libm.so`). Динамический линкер
+   обязан резолвить их в shim (единственный провайдер узла `LIBC`) — именно
+   это гарантирует попадание в наши ABI-трансляторы (см. §6).
+2. **Версия зануляется** у всех прочих импортов (malloc/strlen/memcpy/open/...):
+   они становятся unversioned и биндятся **сразу в glibc** (первый провайдер
+   в scope) — без обёрток-форвардеров. Т.е. обычные функции libc «мапаются
+   на glibc» автоматически самим динамическим линкером: патчер лишь убирает
+   версию `@LIBC`, чтобы glibc (а не наш shim) их подхватил.
+
+### Роль `tools/patch-versions.py`
+
+- Читает `.dynsym`/`.dynstr`/`.gnu.version` движка и экспорт собранных
+  `libc.so`/`libm.so`; «keep-list» (что оставить `@LIBC`) берётся **из
+  реального экспорта shim-библиотек**, поэтому ручная поддержка списка не
+  нужна — добавил символ в shim → патчер автоматически оставит ему версию.
+- `.gnu.version_r`/DT_VERNEED **не трогаются** — узел `LIBC` остаётся
+  резолвимым для shim-набора.
+- Вызывается из `tools/build-native.sh` после e_flags-патча:
+  `python3 tools/patch-versions.py <engine.so> <shim/libc.so> <shim/libm.so>`.
+
+**Важно (урок):** нельзя занулять ВСЕ версии сразу — unversioned-импорты
+резолвятся по порядку scope, где glibc libc.so.6 (зависимость host-бинаря)
+стоит раньше нашего `./libc.so`, поэтому трансляционные обёртки
+(stat/FILE/pthread) молча перестают использоваться и игра падает в glibc на
+bionic-структурах (крэш `fault 0x8` внутри pthread/stdio).
 
 **Типы структур на устройстве (armhf glibc):** pthread_mutex_t=24, cond=48,
 attr=36, mutexattr=4, condattr=4, sem_t=16, key_t=4, once_t=4.
@@ -181,9 +236,10 @@ attr=36, mutexattr=4, condattr=4, sem_t=16, key_t=4, once_t=4.
 |---|---|---|
 | host | `host/gof2hd.c` | SDL2-окно/EGL + геймпад-ввод + движения Java-обёртки |
 | JNI-эмуляция | `host/jni.c`, `jni.h` | Фейковые JavaVM/Jobject/jstring |
-| libc shim | `shim/shim.c`, `abi.c`, `sscanf.c`, `stdio.c` | bionic-символы `@LIBC` → glibc, свой `FILE`-пул |
+| libc shim | `shim/shim.c`, `abi.c`, `sscanf.c`, `stdio.c` | трансляция `@LIBC`-набора (FILE/stat/pthread), спецсимволы |
 | libm shim | `shim/libm.c`, `libm.map` | float-math `@LIBC` (softfp→hardfp) |
 | GLES+EGL bridge | `gles-stub/gles-bridge.c` | softfp→hardfp в libmali, GLES2 + EGL-форварды |
 | fmod stubs | `fmodex-stub/` | Заглушки аудио FMOD |
+| Патч версий | `tools/patch-versions.py` | зануляет VERSYM у не-shim импортов движка |
 | Сборка | `tools/build-native.sh` | всё на устройстве |
 | Запуск | `tools/start-game.sh` | одна команда |

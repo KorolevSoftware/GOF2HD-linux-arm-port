@@ -49,7 +49,7 @@ SDL_LIBS=""
 for d in /usr/lib32 /usr/lib/arm-linux-gnueabihf /usr/lib; do
     [ -e "$d/libSDL2.so" ] && SDL_LIBS="$SDL_LIBS -L$d"
 done
-"$CC" $CFLAGS $SDL_INC -rdynamic -o "$P/host/gof2hd" "$P/host/gof2hd.c" "$P/host/jni.c" $SDL_LIBS -lSDL2 -ldl -lgcc_s
+"$CC" $CFLAGS $SDL_INC -rdynamic -o "$P/host/gof2hd" "$P/host/gof2hd.c" "$P/host/jni.c" $SDL_LIBS -lSDL2 -ldl -lgcc_s -lm
 
 echo "== assembling run-native =="
 rm -rf "$OUT"
@@ -77,6 +77,9 @@ f.close()
 print(f"  e_flags 0x{v:08x} -> 0x{new:08x}")
 PYEOF
 cp "$P/fmodex-stub"/libfmodex.so "$P/fmodex-stub"/libfmodevent.so "$OUT"/
+
+echo "== patching game version tables -> unversioned imports (patch-versions.py) =="
+python3 "$P/tools/patch-versions.py" "$OUT/libgof2hdaa.so" "$P/shim/libc.so" "$P/shim/libm.so"
 
 echo "== done =="
 ls -la "$OUT"
