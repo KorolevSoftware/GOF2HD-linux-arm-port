@@ -182,31 +182,33 @@ static void pad_move(int dx, int dy) {
     if (g_pad_y >= g_height) g_pad_y = g_height - 1;
 }
 
-/* our uinput pad: BTN_A..BTN_Y, DPAD_*, START, SELECT, TL, TR.
- * SDL assigns button indices in the order the driver enumerates them;
- * for the evdev driver that is ascending key code.  We map by button
- * code at open time (SDL_GameControllerGetButton mapping) so a/b/back
- * are reliable. */
+/* ---- built-in ANBERNIC gamepad ----
+ * Empirical mapping from a live capture on the device:
+ *   A=b0, B=b3, X=b2, Y=b1, D-pad=hat0, left stick=a0/a1, right stick=a2/a3.
+ * Left stick moves the on-screen cursor with speed proportional to
+ * deflection (deadzone ~4000); D-pad steps the cursor by 10px; A is a
+ * tap at the cursor, B is BackButtonPressed. */
 static void add_dev_mapping(void) {
     int n = SDL_NumJoysticks();
     for (int i = 0; i < n; i++) {
         const char* nm = SDL_JoystickNameForIndex(i);
         if (!nm) continue;
-        if (strstr(nm, "Virtual Gamepad")) {
-            SDL_JoystickGUID g = SDL_JoystickGetDeviceGUID(i);
-            char guid[64];
-            SDL_JoystickGetGUIDString(g, guid, sizeof(guid));
-            char map[512];
-            snprintf(map, sizeof(map),
-                "%s,%s,a:b0,b:b1,x:b2,y:b3,back:b6,start:b7,"
-                "leftshoulder:b4,rightshoulder:b5,"
-                "dpup:b8,dpdown:b9,dpleft:b10,dpright:b11,"
-                "leftx:a0,lefty:a1,rightx:a2,righty:a3,"
-                "platform:Linux",
-                guid, nm);
-            if (SDL_GameControllerAddMapping(map) > 0)
-                fprintf(stderr, "[pad] mapped %s (%s)\n", nm, guid);
-        }
+        if (!strstr(nm, "ANBERNIC")) continue;
+        SDL_JoystickGUID g = SDL_JoystickGetDeviceGUID(i);
+        char guid[64];
+        SDL_JoystickGetGUIDString(g, guid, sizeof(guid));
+        char map[512];
+        snprintf(map, sizeof(map),
+            "%s,%s,"
+            "a:b0,b:b3,x:b2,y:b1,"
+            "leftshoulder:b7,rightshoulder:b6,lefttrigger:b5,righttrigger:b4,"
+            "back:b12,start:b9,"
+            "dpup:h0.1,dpright:h0.2,dpdown:h0.4,dpleft:h0.8,"
+            "leftx:a0,lefty:a1,rightx:a2,righty:a3,"
+            "platform:Linux",
+            guid, nm);
+        if (SDL_GameControllerAddMapping(map) > 0)
+            fprintf(stderr, "[pad] mapped %s (%s)\n", nm, guid);
     }
 }
 
@@ -214,8 +216,7 @@ static SDL_GameController* find_pad(void) {
     int n = SDL_NumJoysticks();
     for (int i = 0; i < n; i++) {
         const char* nm = SDL_JoystickNameForIndex(i);
-        if (!nm) continue;
-        if (strstr(nm, "Virtual Gamepad")) {
+        if (nm && strstr(nm, "ANBERNIC")) {
             SDL_GameController* c = SDL_GameControllerOpen(i);
             if (c) fprintf(stderr, "[pad] opened %s (idx %d)\n", nm, i);
             return c;
@@ -294,6 +295,19 @@ static void pump_sdl_input(JNIEnv* env, jclass cls) {
         case SDL_CONTROLLERBUTTONUP:
             handle_btn(env, cls, ev.cbutton.button, 0);
             break;
+        case SDL_CONTROLLERAXISMOTION: {
+            const int v = ev.caxis.value;
+            const int dz = 4000;
+            if (abs(v) <= dz) break;
+            int sp = (abs(v) - dz) * 10 / (32767 - dz);
+            if (sp < 1) sp = 1;
+            if (v < 0) sp = -sp;
+            if (ev.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX)
+                pad_move(sp, 0);
+            else if (ev.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY)
+                pad_move(0, sp);
+            break;
+        }
         case SDL_KEYDOWN:
             if (ev.key.repeat) break;
             switch (ev.key.keysym.sym) {
@@ -344,6 +358,21 @@ static int sdl_video_init(void) {
     SDL_GL_SetSwapInterval(0);
     printf("[host] SDL window ready (video driver: %s)\n",
            SDL_GetCurrentVideoDriver());
+    int nj = SDL_NumJoysticks();
+    fprintf(stderr, "[pad] %d joystick(s):\n", nj);
+    for (int i = 0; i < nj; i++) {
+        const char* nm = SDL_JoystickNameForIndex(i);
+        SDL_JoystickGUID g = SDL_JoystickGetDeviceGUID(i);
+        char guid[64];
+        SDL_JoystickGetGUIDString(g, guid, sizeof(guid));
+        SDL_Joystick* j = SDL_JoystickOpen(i);
+        int nb = j ? SDL_JoystickNumButtons(j) : -1;
+        int na = j ? SDL_JoystickNumAxes(j) : -1;
+        int nh = j ? SDL_JoystickNumHats(j) : -1;
+        if (j) SDL_JoystickClose(j);
+        fprintf(stderr, "[pad]   %d: name='%s' guid=%s buttons=%d axes=%d hats=%d\n",
+                i, nm ? nm : "?", guid, nb, na, nh);
+    }
     return 0;
 }
 
@@ -446,7 +475,7 @@ int main(int argc, char** argv) {
     if (g_pad)
         fprintf(stderr, "[pad] gamepad ready\n");
     else
-        fprintf(stderr, "[pad] no gamepad found (run pad-server?)\n");
+        fprintf(stderr, "[pad] no gamepad found\n");
 
     printf("[host] render loop started\n");
     open_touch_fifo();
