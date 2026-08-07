@@ -6,7 +6,7 @@
  * glibc does not provide the "LIBC" version node, so we export every
  * bionic-imported symbol with version "LIBC" and forward to glibc.
  *
- * Build (armhf):  see Makefile
+ * Build (armhf):  see tools/build-native.sh
  */
 #define _GNU_SOURCE
 #include <stdio.h>

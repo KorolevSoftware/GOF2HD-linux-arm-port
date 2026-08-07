@@ -10,7 +10,6 @@ port/gles-stub/*.so
 port/fmodex-stub/*.so
 port/host/gof2hd
 port/host/gof2hd-sdl
-port/viewer/gof2hd-viewer
 
 # Scratch
 *.o
