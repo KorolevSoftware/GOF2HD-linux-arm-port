@@ -118,6 +118,27 @@ __attribute__((pcs("aapcs"))) void clear_soft(float r,float g,float b,float a) {
 (float-math), `shim/stdio.c`, `shim/abi.c`. У EGL нет float-аргументов, поэтому
 для него работает универсальный `EGL_FWD`-макрос (8×`void*`).
 
+**Почему нельзя просто `SF float acosf(float a) { return acosf(a); }`:**
+- Это рекурсивный вызов самого себя (компилятор видит вызов символа `acosf`,
+  который мы и определяем) → бесконечная рекурсия / переполнение стека.
+- Даже если бы имя резолвилось на glibc-функцию, вызов без `pcs("aapcs-vfp")`
+  передал бы float неверно: движок кладёт float в r0-r3 (softfp), а hardfp
+  функция ждёт его в s0-s15. `pcs` входит в тип, поэтому нужен явный указатель
+  с правильной конвенцией.
+
+Правильный паттерн (`shim/libm.c`):
+```c
+typedef float (*HF)(float) __attribute__((pcs("aapcs-vfp")));
+static HF gl_acosf;                       // тип = hardfp (float в s0-s15)
+__attribute__((constructor)) void libm_init(void) {
+    gl_acosf = (HF)dlsym(dlopen("libm.so.6", RTLD_NOW), "acosf"); // настоящий символ
+}
+SF float acosf(float a) { return gl_acosf(a); }  // вызов через HF-pointer
+```
+
+Так работает и в `gles-bridge.c` (каждая GLES2-функция: `__SF` обёртка +
+`__HF` указатель на libmali), и в `stdio.c`/`shim.c`.
+
 **Важно о GLES:** движок импортирует **только GLES2-символы** (проверено
 `readelf`; GLES1-функций в UND-списке нет), поэтому в мосте только они + EGL.
 

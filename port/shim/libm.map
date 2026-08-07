@@ -1,12 +1,28 @@
 LIBC {
   global:
+    acos;
     acosf;
+    atan2;
     atanf;
+    ceil;
+    cos;
     cosf;
+    exp;
+    floor;
+    frexp;
+    ldexp;
+    log;
+    log10;
+    log10f;
+    lrintf;
+    pow;
     powf;
     rint;
+    sin;
     sinf;
+    sqrt;
     sqrtf;
+    tan;
   local:
     *;
 };
