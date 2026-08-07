@@ -404,3 +404,73 @@ __SF void glUseProgram(GLuint a) { if (gt()) dprintf(2, "[gl] useProg %u\n", a);
 __SF void glVertexAttribPointer(GLuint a, GLint b, GLenum c, GLboolean d, GLsizei e, const void* f) { if (gt()) dprintf(2, "[gl] attribPtr %u sz=%d ty=%x st=%d\n", a, b, c, e); if (glVertexAttribPointer_hf) glVertexAttribPointer_hf(a, b, c, d, e, f); }
 __SF void glVertexPointer(GLint a, GLenum b, GLsizei c, const void* d) { if (gt()) dprintf(2, "[gl] vertexPointer %d %x %d\n", a, b, c); if (glVertexPointer_hf) glVertexPointer_hf(a, b, c, d); }
 __SF void glViewport(GLint a, GLint b, GLsizei c, GLsizei d) { if (gt()) dprintf(2, "[gl] viewport %d %d %dx%d\n", a, b, c, d); if (glViewport_hf) glViewport_hf(a, b, c, d); }
+
+/* ---------------- EGL forwarders (libmali.so) ----------------
+ * EGL 1.x/2.x has no float arguments and no float return values, so a
+ * plain hardfp forwarder is ABI-safe for both softfp (engine) and
+ * hardfp (SDL2) callers.  Every EGL function takes at most 5 args
+ * (4 in r0-r3 + 1 on the stack), so the uniform 8-arg trampoline below
+ * forwards correctly for all of them: the real callee reads only its
+ * own registers/stack slot, and the caller (us) balances the stack
+ * according to our own declaration.
+ */
+static void* egl_lib(void) {
+    static void* h = 0;
+    if (!h) h = dlopen("libmali.so", RTLD_NOW | RTLD_LOCAL);
+    if (!h) h = dlopen("libEGL.so.1", RTLD_NOW | RTLD_LOCAL);
+    if (!h) h = dlopen("libEGL.so", RTLD_NOW | RTLD_LOCAL);
+    return h;
+}
+static void* esym(const char* n) { return egl_lib() ? dlsym(egl_lib(), n) : 0; }
+
+#define EGL_FWD(name) \
+    void* name(void* a1, void* a2, void* a3, void* a4, void* a5, void* a6, void* a7, void* a8) { \
+        static void* (*f)(void*, void*, void*, void*, void*, void*, void*, void*) = 0; \
+        if (!f) f = esym(#name); \
+        return f ? f(a1, a2, a3, a4, a5, a6, a7, a8) : 0; \
+    }
+
+EGL_FWD(eglBindAPI)
+EGL_FWD(eglBindTexImage)
+EGL_FWD(eglChooseConfig)
+EGL_FWD(eglClientWaitSyncKHR)
+EGL_FWD(eglCopyBuffers)
+EGL_FWD(eglCreateContext)
+EGL_FWD(eglCreateImageKHR)
+EGL_FWD(eglCreatePbufferFromClientBuffer)
+EGL_FWD(eglCreatePbufferSurface)
+EGL_FWD(eglCreatePixmapSurface)
+EGL_FWD(eglCreateSyncKHR)
+EGL_FWD(eglCreateWindowSurface)
+EGL_FWD(eglDestroyContext)
+EGL_FWD(eglDestroyImageKHR)
+EGL_FWD(eglDestroySurface)
+EGL_FWD(eglDestroySyncKHR)
+EGL_FWD(eglGetConfigAttrib)
+EGL_FWD(eglGetConfigs)
+EGL_FWD(eglGetCurrentContext)
+EGL_FWD(eglGetCurrentDisplay)
+EGL_FWD(eglGetCurrentSurface)
+EGL_FWD(eglGetDisplay)
+EGL_FWD(eglGetError)
+EGL_FWD(eglGetProcAddress)
+EGL_FWD(eglGetSyncAttribKHR)
+EGL_FWD(eglInitialize)
+EGL_FWD(eglMakeCurrent)
+EGL_FWD(eglQueryAPI)
+EGL_FWD(eglQueryContext)
+EGL_FWD(eglQueryDmaBufFormatsEXT)
+EGL_FWD(eglQueryDmaBufModifiersEXT)
+EGL_FWD(eglQueryString)
+EGL_FWD(eglQuerySurface)
+EGL_FWD(eglReleaseTexImage)
+EGL_FWD(eglReleaseThread)
+EGL_FWD(eglSetDamageRegionKHR)
+EGL_FWD(eglSurfaceAttrib)
+EGL_FWD(eglSwapBuffers)
+EGL_FWD(eglSwapInterval)
+EGL_FWD(eglTerminate)
+EGL_FWD(eglWaitClient)
+EGL_FWD(eglWaitGL)
+EGL_FWD(eglWaitNative)
+EGL_FWD(eglWaitSyncKHR)
