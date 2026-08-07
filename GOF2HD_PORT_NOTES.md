@@ -1,7 +1,81 @@
 # GOF2HD Linux Port — технический отчёт
 
-Дата: 2026-08-06
+Дата: 2026-08-06 (последнее обновление: 2026-08-07)
 Проект: порт Galaxy on Fire 2 HD (Android, ARMv7, bionic) на Linux ARM-устройства.
+
+## 0. АКТУАЛЬНОЕ СОСТОЯНИЕ (что нужно знать СЕЙЧАС)
+
+> Разделы 3–12 ниже — история процесса. Свежая картина — здесь. Старые блокеры
+> (softfp/hardfp противоречие, бесконечный CPU-цикл в софт-GLES) **решены**:
+> игра работает на аппаратном Mali через SDL2-окно + ABI-мост.
+
+### Устройство (эталон)
+- **ANBERNIC (стоковая прошивка), root@192.168.0.128, armhf glibc 2.35 + aarch64 kernel.**
+- Пути: `/root/gof2hd/` (проект), `/root/gof2hd/port/run-native/` (собранное),
+  `/root/gof2hd/port_bak/` (бэкап), `/dev/fb0` (framebuffer), `/dev/input/js0` (геймпад).
+- GPU: настоящие EGL/GLES — в `/usr/lib32/libmali.so.0.20.0`. Пустышка
+  `/usr/lib32/libEGL.so.1.4.0` (2968 Б, без EGL-символов).
+- glibc: **2.35** (проверено `ldd --version`), поэтому `sscanf` резолвится
+  как `__isoc99_sscanf@GLIBC_2.7` — обычный `sscanf` использовать можно.
+
+### Видео-путь (работает)
+- Хост рисует через **SDL2** (видеодрайвер `mali`, ядро fb0) + EGL.
+- SDL грузит наш `libEGL.so.1` из `run-native`, наши EGL-символы форвардятся
+  на реальные из `libmali.so` (`gles-stub/gles-bridge.c`, секция EGL_FWD).
+- В логе: `SDL window ready (video driver: mali)`, `logo=1` — рендер идёт.
+
+### Геймпад (ввод)
+- **Встроенный** геймпад консоли `ANBERNIC-keys` (js0/event1, gpio-keys-polled).
+  Виртуальный uinput-геймпад **удалён** из проекта.
+- SDL GameController, маппинг добавляется в `add_dev_mapping()` в `host/gof2hd.c`:
+  `"a:b0,b:b3,x:b2,y:b1,leftshoulder:b7,rightshoulder:b6,lefttrigger:b5,righttrigger:b4,
+    back:b12,start:b9,dpup:h0.1,dpright:h0.2,dpdown:h0.4,dpleft:h0.8,
+    leftx:a0,lefty:a1,rightx:a2,righty:a3"`
+- Hat-значения крестовины (прошивка): UP=1, RIGHT=2, DOWN=4, LEFT=8
+  (сдвиг от SDL-стандарта 0/1/2/3 — уже учтено в маппинге).
+- Логика: левый стик → курсор (скорость ∝ отклонению, deadzone 4000,
+  константы в gof..: `SDL_CONTROLLER_AXIS_LEFTX/LEFTY`), крестовина → шаг курсора
+  10 px, A (`b0`) → touch down/up (pid 722), B (`b3`) → BackButtonPressed.
+- Лог: `[pad] mapped/opened ANBERNIC-keys (idx 0)`, `[pad] gamepad ready`.
+
+### Сборка и запуск — 3 команды
+```sh
+# 1) скопировать порт на устройство (с ПК)
+scp -r port/ root@192.168.0.128:/root/gof2hd/
+# 2) собрать прямо на устройстве (armhf, без кросскомпилятора)
+cd /root/gof2hd/port && bash tools/build-native.sh   # ждать "== done =="
+# 3) запуск одной командой (сам гасит лаунчер, убивает старую игру, поднимает лог)
+bash /root/gof2hd/port/tools/start-game.sh
+# лог: tail -f /root/gof2hd/run.txt
+```
+- Сборка идёт ТОЛЬКО на устройстве (`gcc/g++ arm-linux-gnueabihf`, SDL2 dev
+  в системе). `build-native.sh` собирает: shim (libc/liblog/libandroid/libm/libdl),
+  GLES+EGL мост (`gles-bridge.c` → `libGLESv2.so`, из него же `libEGL.so(.1)`),
+  FMOD-заглушки, хост `gof2hd` (`-lSDL2`), патчит e_flags игры soft→hardfp.
+- `start-game.sh` ставит env: `SDL_VIDEODRIVER=mali`, `SDL_AUDIODRIVER=dummy`,
+  `GOF_SHOW_CURSOR=1`, `LD_LIBRARY_PATH=.:/usr/lib32`.
+
+### Что удалено из репозитория (почищено 2026-08-07)
+- `port/tools/build.sh` (старая softfp-сборка), `build-hardfp.sh` (старая кросс-сборка).
+- `port/Makefile`, `gles-stub/gles-stub.c` (софт-GLES), `viewer/viewer.c`,
+  `port/shim/gen_shim.py`. `port/viewer/` — пусто, удалено. `.gitignore` почищен.
+- `port/pad/pad-server.c` + `pad-client.py` — виртуальный геймпад (uinput) удалён.
+- Из `gof2hd.c` убран костыль `legacy_sscanf` (сборка на устройстве, glibc 2.35 —
+  обычного `sscanf` достаточно; в коде снова нормальный `sscanf("%d %d %d %d", ...)`).
+- Из `gles-bridge.c` убраны ВСЕ GLES1-функции — движок импортирует только GLES2
+  (проверено `readelf`; GLES1-функций в UND-списке движка нет).
+
+### Важные операционные нюансы
+- **Не использовать `pkill -f`/`pgrep -f` с совпадением имени** — фантом убивает
+  саму команду. Процессы убивать только по PID, причём `kill -9` (SIGTERM ловится
+  crash-handler'ом игры, не срабатывает).
+- SSH из этой среды: `export SSH_ASKPASS=/tmp/opencode/askpass.sh
+  SSH_ASKPASS_REQUIRE=force DISPLAY=dummy:0`.
+- git push невозможен из среды (SSH с ключом отклоняется) — пушит пользователь.
+
+### Устаревшие/исторические разделы ниже
+Разделы 3–12 описывают путь: софт-GLES стаб, CPU-цикл, противоречие
+softfp/hardfp и т.д. Они оставлены как история решений — это НЕ гайд по сборке.
 
 ---
 
