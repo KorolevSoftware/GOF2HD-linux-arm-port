@@ -92,7 +92,13 @@ static jint (*p_isInMainMenu)(JNIEnv*, jclass);
 static jint (*p_getScreenshotFlag)(JNIEnv*, jclass);
 static void (*p_resetScreenshotFlag)(JNIEnv*, jclass);
 static void (*p_handleTouchEvent)(JNIEnv*, jclass, jint, jint, jint, jint);
-static void (*p_handleAccelerometer)(JNIEnv*, jclass, jfloat, jfloat, jfloat);
+/*
+ * Engine is softfp (bionic armeabi-v7a): floats live in r0-r3.  Our host is
+ * hardfp (aapcs-vfp), so a plain function pointer would pass the jfloat args
+ * in s0-s2 and the engine would read garbage from r0-r3.  Mark the pointer
+ * pcs("aapcs") so the floats are placed in integer registers at the call.
+ */
+static void (__attribute__((pcs("aapcs"))) *p_handleAccelerometer)(JNIEnv*, jclass, jfloat, jfloat, jfloat);
 static void (*p_setOrigamiSuperClub)(JNIEnv*, jclass, jstring);
 static void (*p_backbutton_fn)(JNIEnv*, jclass);
 
@@ -149,6 +155,15 @@ static void draw_cursor_on_fb(void) {
 /* ---- gamepad: SDL2 joystick subsystem sees our uinput device ---- */
 static SDL_Window* g_win = NULL;
 static SDL_GameController* g_pad = NULL;
+static int g_gyro_mode = 0;   /* left stick -> accelerometer (START toggles) */
+
+static float gyro_axis(int v) {
+    const int dz = 4000;
+    if (abs(v) <= dz) return 0.0f;
+    float n = (float)(v > 0 ? v - dz : v + dz) / (32767 - dz);
+    if (n > 1.0f) n = 1.0f; else if (n < -1.0f) n = -1.0f;
+    return n;
+}
 
 static void pad_move(int dx, int dy) {
     g_pad_x += dx; g_pad_y += dy;
@@ -229,6 +244,14 @@ static void handle_btn(JNIEnv* env, jclass cls, int ctrl_btn, int down) {
             p_backbutton_fn(env, cls);
         }
         break;
+    case SDL_CONTROLLER_BUTTON_START:
+    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+        if (down) {
+            g_gyro_mode = !g_gyro_mode;
+            fprintf(stderr, "[pad] gyro mode %s (left stick -> accelerometer)\n",
+                    g_gyro_mode ? "ON" : "OFF");
+        }
+        break;
     }
 }
 
@@ -261,6 +284,30 @@ static void pump_touch(JNIEnv* env, jclass cls) {
     }
 }
 
+static void pump_gyro(JNIEnv* env, jclass cls) {
+    if (!g_pad || !p_handleAccelerometer) return;
+    float ax, ay, az;
+    if (g_gyro_mode) {
+        float nx = gyro_axis(SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTX));
+        float ny = gyro_axis(SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTY));
+        /*
+         * JNI stub: SetAccelValue(-a, b, c) == engine (X, Y, Z).
+         *   steer uses accel[1] (Y) = b -> stick X  (works)
+         *   pitch uses accel[2] (Z) = c, driven from stick Y.
+         * Engine expects Z ~ +1.0 when the device is held level (Android
+         * sends z/10 ~ 0.98), so neutral is Z = 1.0, not 0 (Z=0 reads as a
+         * forward tilt and makes the ship dive).
+         */
+        ax = 0.0f;
+        ay = -nx;
+        az = 1.0f + ny;
+    } else {
+        ax = ay = 0.0f;
+        az = 1.0f;
+    }
+    p_handleAccelerometer(env, cls, ax, ay, az);
+}
+
 static void pump_sdl_input(JNIEnv* env, jclass cls) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
@@ -275,6 +322,11 @@ static void pump_sdl_input(JNIEnv* env, jclass cls) {
             const int v = ev.caxis.value;
             const int dz = 4000;
             if (abs(v) <= dz) break;
+            /* in gyro mode the left stick feeds the accelerometer, not the cursor */
+            if (g_gyro_mode &&
+                (ev.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
+                 ev.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY))
+                break;
             int sp = (abs(v) - dz) * 10 / (32767 - dz);
             if (sp < 1) sp = 1;
             if (v < 0) sp = -sp;
@@ -371,6 +423,7 @@ int main(int argc, char** argv) {
     g_display_width = g_width;
     g_display_height = g_height;
     if (getenv("GOF_VERBOSE_JNI")) g_jni_verbose = 1;
+    if (getenv("GOF_GYRO")) g_gyro_mode = 1;
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
     if (!getenv("GOF_GDB")) install_crash_handler();
@@ -460,6 +513,7 @@ int main(int argc, char** argv) {
         long t0 = now_ms();
         pump_touch(env, cls);
         pump_sdl_input(env, cls);
+        pump_gyro(env, cls);
         p_renderstep(env, cls, t0);
         sdl_swap();
         frames++;
