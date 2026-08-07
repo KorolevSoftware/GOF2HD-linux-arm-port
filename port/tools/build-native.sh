@@ -40,8 +40,16 @@ echo "== building fmod stubs =="
 "$CC" $CFLAGS -shared -fPIC -o "$P/fmodex-stub/libfmodex.so" "$P/fmodex-stub/fmodex_stub.c"
 "$CXX" $CFLAGS -shared -fPIC -o "$P/fmodex-stub/libfmodevent.so" "$P/fmodex-stub/fmodevent_stub.cpp"
 
-echo "== building host =="
-"$CC" $CFLAGS -rdynamic -o "$P/host/gof2hd" "$P/host/gof2hd.c" "$P/host/jni.c" -ldl -lgcc_s
+echo "== building host (SDL2) =="
+SDL_INC=""
+for d in /usr/include/arm-linux-gnueabihf /usr/include; do
+    [ -d "$d/SDL2" ] && SDL_INC="$SDL_INC -I$d"
+done
+SDL_LIBS=""
+for d in /usr/lib32 /usr/lib/arm-linux-gnueabihf /usr/lib; do
+    [ -e "$d/libSDL2.so" ] && SDL_LIBS="$SDL_LIBS -L$d"
+done
+"$CC" $CFLAGS $SDL_INC -rdynamic -o "$P/host/gof2hd" "$P/host/gof2hd.c" "$P/host/jni.c" $SDL_LIBS -lSDL2 -ldl -lgcc_s
 
 echo "== assembling run-native =="
 rm -rf "$OUT"
@@ -50,6 +58,7 @@ cp "$P/shim"/libc.so "$P/shim"/liblog.so "$P/shim"/libandroid.so "$P/shim"/libm.
 cp "$P/gles-stub"/libGLESv2.so "$OUT"/libGLESv2.so
 cp "$P/gles-stub"/libGLESv2.so "$OUT"/libGLESv1_CM.so
 cp "$P/gles-stub"/libGLESv2.so "$OUT"/libEGL.so
+cp "$P/gles-stub"/libGLESv2.so "$OUT"/libEGL.so.1
 cp "$P/host/gof2hd" "$OUT"/
 [ -f /root/gof2hd/libgof2hdaa.so ] && \
     cp /root/gof2hd/libgof2hdaa.so "$OUT"/ || \

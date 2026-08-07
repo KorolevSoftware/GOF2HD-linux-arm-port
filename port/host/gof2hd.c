@@ -6,10 +6,17 @@
  *   -> setEnvironmentVariables(context) -> setCountryCodeOfDevice
  *   -> initialize(w,h) -> resize(w,h) -> { renderstep(ms); sleep ~33ms; }
  *
+ * Window/EGL and gamepad input are handled by SDL2 (device build: SDL2 with
+ * the mali-fbdev video driver + the built-in joystick/gamecontroller
+ * subsystem). The engine still resolves its GLES calls through our
+ * libGLESv2.so shim -> libmali, so frames render into the same SDL/EGL
+ * context on the device framebuffer.
+ *
  * Usage: gof2hd <apk> <obb> <dataDir> [width] [height]
  */
 #define _GNU_SOURCE
 #include "jni.h"
+#include <SDL2/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,37 +54,7 @@ static int legacy_sscanf(const char* s, const char* fmt, ...) {
 }
 #define sscanf legacy_sscanf
 
-static char g_maps[32768];
-static int g_maps_len = 0;
-static void snapshot_maps(void) {
-    int fd = open("/proc/self/maps", O_RDONLY);
-    if (fd < 0) return;
-    g_maps_len = read(fd, g_maps, sizeof(g_maps) - 1);
-    close(fd);
-    if (g_maps_len > 0) g_maps[g_maps_len] = 0;
-}
-
-static void find_addr(unsigned long a, char* out, size_t n) {
-    out[0] = 0;
-    char* p = g_maps;
-    char* end = g_maps + g_maps_len;
-    while (p < end) {
-        char* nl = strchr(p, '\n');
-        if (!nl) nl = end;
-        char saved = *nl; *nl = 0;
-        unsigned long lo, hi;
-        char path[256] = "";
-        if (sscanf(p, "%lx-%lx %*s %*s %*s %*s %255s", &lo, &hi, path) >= 2 &&
-            a >= lo && a < hi) {
-            snprintf(out, n, "%s +0x%lx", path[0] ? path : "[anon]", a - lo);
-            *nl = saved;
-            return;
-        }
-        *nl = saved;
-        p = nl + 1;
-    }
-}
-
+/* ---- crash handler ---- */
 static void crash_handler(int sig, siginfo_t* si, void* uc) {
     ucontext_t* u = (ucontext_t*)uc;
     char buf[512];
@@ -90,10 +67,6 @@ static void crash_handler(int sig, siginfo_t* si, void* uc) {
         u->uc_mcontext.arm_r6, u->uc_mcontext.arm_r7,
         u->uc_mcontext.arm_sp, u->uc_mcontext.arm_lr, u->uc_mcontext.arm_pc);
     if (n > 0) write(2, buf, n);
-    if (g_maps_len > 0) {
-        write(2, "---- maps ----\n", 15);
-        write(2, g_maps, g_maps_len);
-    }
     _exit(128 + sig);
 }
 
@@ -127,7 +100,7 @@ static void install_dump_handler(void) {
     sigaction(SIGUSR1, &sa, NULL);
 }
 
-/* engine entry points (resolved via dlsym) */
+/* ---- engine entry points (resolved via dlsym) ---- */
 static jint (*p_JNI_OnLoad)(JavaVM_* vm);
 static void (*p_setZIPPath)(JNIEnv*, jclass, jstring);
 static void (*p_SetDirectories)(JNIEnv*, jclass, jstring, jstring);
@@ -167,166 +140,119 @@ static long now_ms(void) {
     return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-/* ---- EGL presenter (replaces the Android Java surface/swap) ----
- * On Android the Java GLSurfaceView does eglCreateWindowSurface +
- * eglSwapBuffers around the native renderstep.  Here we create the
- * default fbdev window surface ourselves and swap after each frame. */
-typedef void* EGLDisplay;
-typedef void* EGLConfig;
-typedef void* EGLSurface;
-typedef void* EGLContext;
-typedef int32_t EGLBoolean;
-typedef int32_t EGLint;
-typedef int32_t GLint;
-typedef int32_t GLsizei;
-typedef unsigned int GLenum;
+/* ---- cursor drawn on fb0 (shared with SDL mali-fbdev surface) ---- */
+static int g_pad_x = 320, g_pad_y = 240;   /* virtual finger (defined in pad section) */
+static int g_pad_down = 0;
+static int g_cursor_fb = -1;
+static unsigned char* g_cursor_map = NULL;
 
-static EGLDisplay (*q_eglGetDisplay)(EGLDisplay);
-static EGLBoolean (*q_eglInitialize)(EGLDisplay, EGLint*, EGLint*);
-static EGLBoolean (*q_eglChooseConfig)(EGLDisplay, const EGLint*, EGLConfig*, EGLint, EGLint*);
-static EGLBoolean (*q_eglGetConfigAttrib)(EGLDisplay, EGLConfig, EGLint, EGLint*);
-static EGLSurface (*q_eglCreateWindowSurface)(EGLDisplay, EGLConfig, void*, const EGLint*);
-static EGLContext (*q_eglCreateContext)(EGLDisplay, EGLConfig, EGLContext, const EGLint*);
-static EGLBoolean (*q_eglMakeCurrent)(EGLDisplay, EGLSurface, EGLSurface, EGLContext);
-static EGLBoolean (*q_eglSwapBuffers)(EGLDisplay, EGLSurface);
-static EGLint (*q_eglGetError)(void);
-
-static EGLDisplay g_egl_display;
-static EGLSurface g_egl_surface;
-
-static int setup_egl(void) {
-    const char* path = getenv("GOF_EGL_LIB");
-    if (!path) path = "/usr/lib32/libEGL.so.1";
-    void* h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
-    if (!h) {
-        h = dlopen("libEGL.so.1", RTLD_NOW | RTLD_LOCAL);
-        if (!h) { fprintf(stderr, "[host] EGL: %s\n", dlerror()); return -1; }
+static void draw_cursor_on_fb(void) {
+    if (!getenv("GOF_SHOW_CURSOR")) return;
+    if (g_cursor_fb < 0) {
+        const char* p = getenv("GOF_FB");
+        g_cursor_fb = open(p ? p : "/dev/fb0", O_RDWR);
+        if (g_cursor_fb >= 0)
+            g_cursor_map = mmap(NULL, g_width * g_height * 4,
+                                PROT_READ | PROT_WRITE, MAP_SHARED, g_cursor_fb, 0);
     }
-    q_eglGetDisplay = dlsym(h, "eglGetDisplay");
-    q_eglInitialize = dlsym(h, "eglInitialize");
-    q_eglChooseConfig = dlsym(h, "eglChooseConfig");
-    q_eglGetConfigAttrib = dlsym(h, "eglGetConfigAttrib");
-    q_eglCreateWindowSurface = dlsym(h, "eglCreateWindowSurface");
-    q_eglCreateContext = dlsym(h, "eglCreateContext");
-    q_eglMakeCurrent = dlsym(h, "eglMakeCurrent");
-    q_eglSwapBuffers = dlsym(h, "eglSwapBuffers");
-    q_eglGetError = dlsym(h, "eglGetError");
-    if (!q_eglGetDisplay || !q_eglInitialize || !q_eglChooseConfig ||
-        !q_eglCreateWindowSurface || !q_eglCreateContext || !q_eglMakeCurrent ||
-        !q_eglSwapBuffers) {
-        fprintf(stderr, "[host] EGL: missing symbols in %s\n", path);
-        return -1;
-    }
-    g_egl_display = q_eglGetDisplay(0);
-    if (!g_egl_display) { fprintf(stderr, "[host] EGL: eglGetDisplay failed\n"); return -1; }
-    EGLint maj = 0, min = 0;
-    if (!q_eglInitialize(g_egl_display, &maj, &min)) {
-        fprintf(stderr, "[host] EGL: eglInitialize failed\n"); return -1;
-    }
-    EGLConfig cfgs[8];
-    EGLint n = 0;
-    {
-        static const EGLint attribs[] = {
-            0x3033 /*EGL_SURFACE_TYPE*/, 0x4  /*EGL_WINDOW_BIT*/,
-            0x3040 /*EGL_RENDERABLE_TYPE*/, 0x4 /*EGL_OPENGL_ES2_BIT*/,
-            0x3024 /*EGL_RED_SIZE*/, 8,
-            0x3023 /*EGL_GREEN_SIZE*/, 8,
-            0x3022 /*EGL_BLUE_SIZE*/, 8,
-            0x3021 /*EGL_ALPHA_SIZE*/, 8,
-            0x3025 /*EGL_DEPTH_SIZE*/, 24,
-            0x3026 /*EGL_STENCIL_SIZE*/, 8,
-            0x3038 /*EGL_NONE*/
-        };
-        if (!q_eglChooseConfig(g_egl_display, attribs, cfgs, 8, &n) || n < 1) {
-            fprintf(stderr, "[host] EGL: no ES2 configs (err=%d)\n", q_eglGetError()); return -1;
+    if (!g_cursor_map) return;
+    int cx = g_pad_x, cy = g_pad_y;
+    if (cx < 0 || cy < 0 || cx >= g_width || cy >= g_height) return;
+    for (int i = -12; i <= 12; i++) {
+        for (int t = 0; t < 3; t++) {
+            int x1 = cx + i, y1 = cy - t + 1;
+            int x2 = cx - t + 1, y2 = cy + i;
+            unsigned char* p1 = g_cursor_map + ((size_t)y1 * g_width + x1) * 4;
+            unsigned char* p2 = g_cursor_map + ((size_t)y2 * g_width + x2) * 4;
+            if (x1 >= 0 && x1 < g_width && y1 >= 0 && y1 < g_height) { p1[2]=255; p1[1]=80; p1[0]=80; }
+            if (x2 >= 0 && x2 < g_width && y2 >= 0 && y2 < g_height) { p2[2]=255; p2[1]=80; p2[0]=80; }
         }
     }
-    EGLConfig cfg = cfgs[0];
-    for (EGLint i = 0; i < n && i < 4; i++) {
-        EGLint depth = 0;
-        q_eglGetConfigAttrib(g_egl_display, cfgs[i], 0x3025 /*EGL_DEPTH_SIZE*/, &depth);
-        if (depth >= 16) { cfg = cfgs[i]; break; }
-    }
-    g_egl_surface = q_eglCreateWindowSurface(g_egl_display, cfg, NULL, 0);
-    if (!g_egl_surface) {
-        fprintf(stderr, "[host] EGL: window surface failed (err=%d)\n", q_eglGetError());
-        return -1;
-    }
-    {
-        static const EGLint ctx_attrs[] = {
-            0x3098 /*EGL_CONTEXT_CLIENT_VERSION*/, 2,
-            0x3038 /*EGL_NONE*/
-        };
-        EGLContext ctx = q_eglCreateContext(g_egl_display, cfg, 0, ctx_attrs);
-        if (!ctx) {
-            fprintf(stderr, "[host] EGL: ES2 context failed (err=%d)\n", q_eglGetError());
-            return -1;
-        }
-        if (!q_eglMakeCurrent(g_egl_display, g_egl_surface, g_egl_surface, ctx)) {
-            fprintf(stderr, "[host] EGL: makeCurrent failed (err=%d)\n", q_eglGetError());
-            return -1;
-        }
-    }
-    fprintf(stderr, "[host] EGL: display/surface/context ready (EGL %d.%d)\n", maj, min);
-    {
-        static EGLint (*q_eglQuerySurface)(EGLDisplay, EGLSurface, EGLint, EGLint*);
-        static EGLint (*q_eglGetCurrentSurface)(EGLint);
-        if (!q_eglQuerySurface) q_eglQuerySurface = dlsym(h, "eglQuerySurface");
-        if (!q_eglGetCurrentSurface) q_eglGetCurrentSurface = dlsym(h, "eglGetCurrentSurface");
-        if (q_eglQuerySurface && q_eglGetCurrentSurface) {
-            EGLint w = 0, hh = 0;
-            EGLSurface cs = q_eglGetCurrentSurface(0x3059 /*EGL_DRAW*/);
-            q_eglQuerySurface(g_egl_display, g_egl_surface, 0x3057 /*EGL_WIDTH*/, &w);
-            q_eglQuerySurface(g_egl_display, g_egl_surface, 0x3056 /*EGL_HEIGHT*/, &hh);
-            fprintf(stderr, "[host] EGL surface=%p cur=%p %dx%d\n", g_egl_surface, cs, w, hh);
-        }
-    }
-    return 0;
 }
 
-static void draw_cursor_on_fb(void);
+/* ---- gamepad: SDL2 joystick subsystem sees our uinput device ---- */
+static SDL_Window* g_win = NULL;
+static SDL_GameController* g_pad = NULL;
 
-static void swap_egl(void) {
-    static void (*q_glReadPixels)(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void*);
-    static void (*q_glClearColor)(float, float, float, float);
-    static void (*q_glClear)(GLint);
-    if (!q_glReadPixels) {
-        void* g = dlopen("libGLESv2.so.2", RTLD_NOW | RTLD_LOCAL);
-        if (g) {
-            q_glReadPixels = dlsym(g, "glReadPixels");
-            q_glClearColor = dlsym(g, "glClearColor");
-            q_glClear = dlsym(g, "glClear");
+static void pad_move(int dx, int dy) {
+    g_pad_x += dx; g_pad_y += dy;
+    if (g_pad_x < 0) g_pad_x = 0;
+    if (g_pad_y < 0) g_pad_y = 0;
+    if (g_pad_x >= g_width) g_pad_x = g_width - 1;
+    if (g_pad_y >= g_height) g_pad_y = g_height - 1;
+}
+
+/* our uinput pad: BTN_A..BTN_Y, DPAD_*, START, SELECT, TL, TR.
+ * SDL assigns button indices in the order the driver enumerates them;
+ * for the evdev driver that is ascending key code.  We map by button
+ * code at open time (SDL_GameControllerGetButton mapping) so a/b/back
+ * are reliable. */
+static void add_dev_mapping(void) {
+    int n = SDL_NumJoysticks();
+    for (int i = 0; i < n; i++) {
+        const char* nm = SDL_JoystickNameForIndex(i);
+        if (!nm) continue;
+        if (strstr(nm, "Virtual Gamepad")) {
+            SDL_JoystickGUID g = SDL_JoystickGetDeviceGUID(i);
+            char guid[64];
+            SDL_JoystickGetGUIDString(g, guid, sizeof(guid));
+            char map[512];
+            snprintf(map, sizeof(map),
+                "%s,%s,a:b0,b:b1,x:b2,y:b3,back:b6,start:b7,"
+                "leftshoulder:b4,rightshoulder:b5,"
+                "dpup:b8,dpdown:b9,dpleft:b10,dpright:b11,"
+                "leftx:a0,lefty:a1,rightx:a2,righty:a3,"
+                "platform:Linux",
+                guid, nm);
+            if (SDL_GameControllerAddMapping(map) > 0)
+                fprintf(stderr, "[pad] mapped %s (%s)\n", nm, guid);
         }
     }
-    if (getenv("GOF_GL_DIAG")) {
-        static long t0;
-        static int shown;
-        if (!shown) { shown = 1; t0 = now_ms(); }
-        if (now_ms() - t0 < 9000 && (now_ms() / 1500) % 3 == 0) {
-            static void (*q_glGetIntegerv)(GLenum, GLint*);
-            static GLenum (*q_glGetError)(void);
-            static void* g;
-            if (!q_glGetIntegerv) {
-                g = dlopen("libGLESv2.so.2", RTLD_NOW | RTLD_LOCAL);
-                if (g) {
-                    q_glGetIntegerv = dlsym(g, "glGetIntegerv");
-                    q_glGetError = dlsym(g, "glGetError");
-                }
-            }
-            if (q_glGetIntegerv) {
-                GLint v[4] = { -1, -1, -1, -1 };
-                q_glGetIntegerv(0x8B8D /*GL_CURRENT_PROGRAM*/, &v[0]);
-                q_glGetIntegerv(0x8CA6 /*GL_FRAMEBUFFER_BINDING*/, &v[1]);
-                q_glGetIntegerv(0x0BA2 /*GL_VIEWPORT*/, &v[2]);
-                q_glGetIntegerv(0x0D33, &v[3]);
-                fprintf(stderr, "[host] diag prog=%d fbo=%d vp=%d glerr=%d\n",
-                        v[0], v[1], v[2], q_glGetError ? q_glGetError() : -1);
-            }
+}
+
+static SDL_GameController* find_pad(void) {
+    int n = SDL_NumJoysticks();
+    for (int i = 0; i < n; i++) {
+        const char* nm = SDL_JoystickNameForIndex(i);
+        if (!nm) continue;
+        if (strstr(nm, "Virtual Gamepad")) {
+            SDL_GameController* c = SDL_GameControllerOpen(i);
+            if (c) fprintf(stderr, "[pad] opened %s (idx %d)\n", nm, i);
+            return c;
         }
     }
-    if (g_egl_surface && q_eglSwapBuffers)
-        q_eglSwapBuffers(g_egl_display, g_egl_surface);
-    draw_cursor_on_fb();
+    if (n > 0) {
+        SDL_GameController* c = SDL_GameControllerOpen(0);
+        if (c) fprintf(stderr, "[pad] opened fallback controller 0\n");
+        return c;
+    }
+    return NULL;
+}
+
+static void handle_btn(JNIEnv* env, jclass cls, int ctrl_btn, int down) {
+    switch (ctrl_btn) {
+    case SDL_CONTROLLER_BUTTON_DPAD_UP:    if (down) pad_move(0, -10); break;
+    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  if (down) pad_move(0, +10); break;
+    case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  if (down) pad_move(-10, 0); break;
+    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: if (down) pad_move(+10, 0); break;
+    case SDL_CONTROLLER_BUTTON_A:
+        if (down && !g_pad_down) {
+            g_pad_down = 1;
+            p_handleTouchEvent(env, cls, 722, 0, g_pad_x, g_pad_y);
+            fprintf(stderr, "[pad] touch down %d,%d\n", g_pad_x, g_pad_y);
+        } else if (!down && g_pad_down) {
+            g_pad_down = 0;
+            p_handleTouchEvent(env, cls, 722, 1, g_pad_x, g_pad_y);
+            fprintf(stderr, "[pad] touch up %d,%d\n", g_pad_x, g_pad_y);
+        }
+        break;
+    case SDL_CONTROLLER_BUTTON_B:
+        if (down && p_backbutton_fn) {
+            fprintf(stderr, "[pad] back\n");
+            p_backbutton_fn(env, cls);
+        }
+        break;
+    }
 }
 
 /* ---- mouse -> touch bridge (host side viewer writes /tmp/gof2hd_touch) ---- */
@@ -358,110 +284,72 @@ static void pump_touch(JNIEnv* env, jclass cls) {
     }
 }
 
-/* ---- virtual gamepad -> touch/back bridge (uinput device on host) ---- */
-#include <linux/input.h>
-#include <poll.h>
-#include <sys/ioctl.h>
-
-#define PAD_DEV "/dev/input/event4"   /* GOF2HD Virtual Gamepad; see tools/pad-server */
-
-static int g_pad_fd = -1;
-static int g_pad_x = 320, g_pad_y = 240;   /* virtual finger */
-static int g_pad_down = 0;                 /* BTN_A held */
-
-static int open_pad(void) {
-    int fd = open(PAD_DEV, O_RDONLY | O_NONBLOCK);
-    if (fd < 0) {
-        /* try to find it by name */
-        for (int i = 0; i < 8; i++) {
-            char path[32];
-            snprintf(path, sizeof(path), "/dev/input/event%d", i);
-            int f2 = open(path, O_RDONLY | O_NONBLOCK);
-            if (f2 < 0) continue;
-            char name[128] = "";
-            if (ioctl(f2, EVIOCGNAME(sizeof(name)), name) >= 0 &&
-                strstr(name, "GOF2HD Virtual Gamepad")) {
-                fd = f2;
-                fprintf(stderr, "[pad] found %s at %s\n", name, path);
+static void pump_sdl_input(JNIEnv* env, jclass cls) {
+    SDL_Event ev;
+    while (SDL_PollEvent(&ev)) {
+        switch (ev.type) {
+        case SDL_CONTROLLERBUTTONDOWN:
+            handle_btn(env, cls, ev.cbutton.button, 1);
+            break;
+        case SDL_CONTROLLERBUTTONUP:
+            handle_btn(env, cls, ev.cbutton.button, 0);
+            break;
+        case SDL_KEYDOWN:
+            if (ev.key.repeat) break;
+            switch (ev.key.keysym.sym) {
+            case SDLK_UP:    pad_move(0, -10); break;
+            case SDLK_DOWN:  pad_move(0, +10); break;
+            case SDLK_LEFT:  pad_move(-10, 0); break;
+            case SDLK_RIGHT: pad_move(+10, 0); break;
+            case SDLK_RETURN: case SDLK_SPACE:
+                p_handleTouchEvent(env, cls, 722, 0, g_pad_x, g_pad_y);
+                p_handleTouchEvent(env, cls, 722, 1, g_pad_x, g_pad_y);
+                fprintf(stderr, "[pad] key tap %d,%d\n", g_pad_x, g_pad_y);
+                break;
+            case SDLK_BACKSPACE: case SDLK_ESCAPE:
+                if (p_backbutton_fn) { fprintf(stderr, "[pad] back\n"); p_backbutton_fn(env, cls); }
                 break;
             }
-            close(f2);
-        }
-    }
-    return fd;
-}
-
-static void pad_move(int dx, int dy) {
-    g_pad_x += dx; g_pad_y += dy;
-    if (g_pad_x < 0) g_pad_x = 0;
-    if (g_pad_y < 0) g_pad_y = 0;
-    if (g_pad_x >= g_width) g_pad_x = g_width - 1;
-    if (g_pad_y >= g_height) g_pad_y = g_height - 1;
-}
-
-static void pump_pad(JNIEnv* env, jclass cls) {
-    if (g_pad_fd < 0) return;
-    struct input_event ev;
-    while (read(g_pad_fd, &ev, sizeof(ev)) == sizeof(ev)) {
-        if (ev.type != EV_KEY && ev.type != EV_ABS) continue;
-        int code = ev.code;
-        int val = ev.value;
-        if (ev.type == EV_ABS && code == ABS_X) { g_pad_x = (val + 32768) * g_width / 65536; continue; }
-        if (ev.type == EV_ABS && code == ABS_Y) { g_pad_y = (val + 32768) * g_height / 65536; continue; }
-        if (ev.type != EV_KEY || val < 0) continue;
-        switch (code) {
-        case BTN_DPAD_UP:    pad_move(0, -10); break;
-        case BTN_DPAD_DOWN:  pad_move(0, +10); break;
-        case BTN_DPAD_LEFT:  pad_move(-10, 0); break;
-        case BTN_DPAD_RIGHT: pad_move(+10, 0); break;
-        case BTN_A:
-            if (val && !g_pad_down) {
-                g_pad_down = 1;
-                p_handleTouchEvent(env, cls, 722, 0, g_pad_x, g_pad_y);
-                fprintf(stderr, "[pad] touch down %d,%d\n", g_pad_x, g_pad_y);
-            } else if (!val && g_pad_down) {
-                g_pad_down = 0;
-                p_handleTouchEvent(env, cls, 722, 1, g_pad_x, g_pad_y);
-                fprintf(stderr, "[pad] touch up %d,%d\n", g_pad_x, g_pad_y);
-            }
-            break;
-        case BTN_B:
-            if (val && p_backbutton_fn) {
-                fprintf(stderr, "[pad] back\n");
-                p_backbutton_fn(env, cls);
-            }
             break;
         }
     }
 }
 
-/* draw a crosshair at the virtual gamepad cursor position directly into the
- * framebuffer. GOF_FB is 640x480 BGRA (libmali surface). */
-static int g_cursor_fb = -1;
-static unsigned char* g_cursor_map = NULL;
+/* ---- SDL2 window + GL context ---- */
+static int sdl_video_init(void) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {
+        fprintf(stderr, "[host] SDL_Init: %s\n", SDL_GetError());
+        return -1;
+    }
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+    g_win = SDL_CreateWindow("GOF2HD", 0, 0, g_width, g_height, SDL_WINDOW_OPENGL);
+    if (!g_win) {
+        fprintf(stderr, "[host] SDL_CreateWindow: %s\n", SDL_GetError());
+        return -1;
+    }
+    SDL_GLContext gl = SDL_GL_CreateContext(g_win);
+    if (!gl) {
+        fprintf(stderr, "[host] SDL_GL_CreateContext: %s\n", SDL_GetError());
+        return -1;
+    }
+    SDL_GL_MakeCurrent(g_win, gl);
+    SDL_GL_SetSwapInterval(0);
+    printf("[host] SDL window ready (video driver: %s)\n",
+           SDL_GetCurrentVideoDriver());
+    return 0;
+}
 
-static void draw_cursor_on_fb(void) {
-    if (!getenv("GOF_SHOW_CURSOR")) return;
-    if (g_cursor_fb < 0) {
-        const char* p = getenv("GOF_FB");
-        g_cursor_fb = open(p ? p : "/dev/fb0", O_RDWR);
-        if (g_cursor_fb >= 0)
-            g_cursor_map = mmap(NULL, g_width * g_height * 4,
-                                PROT_READ | PROT_WRITE, MAP_SHARED, g_cursor_fb, 0);
-    }
-    if (!g_cursor_map) return;
-    int cx = g_pad_x, cy = g_pad_y;
-    if (cx < 0 || cy < 0 || cx >= g_width || cy >= g_height) return;
-    for (int i = -12; i <= 12; i++) {
-        for (int t = 0; t < 3; t++) {
-            int x1 = cx + i, y1 = cy - t + 1;
-            int x2 = cx - t + 1, y2 = cy + i;
-            unsigned char* p1 = g_cursor_map + ((size_t)y1 * g_width + x1) * 4;
-            unsigned char* p2 = g_cursor_map + ((size_t)y2 * g_width + x2) * 4;
-            if (x1 >= 0 && x1 < g_width && y1 >= 0 && y1 < g_height) { p1[2]=255; p1[1]=80; p1[0]=80; }
-            if (x2 >= 0 && x2 < g_width && y2 >= 0 && y2 < g_height) { p2[2]=255; p2[1]=80; p2[0]=80; }
-        }
-    }
+static void sdl_swap(void) {
+    SDL_GL_SwapWindow(g_win);
+    draw_cursor_on_fb();
 }
 
 int main(int argc, char** argv) {
@@ -481,6 +369,7 @@ int main(int argc, char** argv) {
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
     if (!getenv("GOF_GDB")) install_crash_handler();
+    install_dump_handler();
 
     /* load engine libs (LD_LIBRARY_PATH must point to our shim dir) */
     /* ensure libgcc_s + libstdc++ are loaded: provide __aeabi_/_Unwind_/__cxa_ helpers */
@@ -494,11 +383,6 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[host] warn: libfmodevent: %s\n", dlerror());
     void* h = dlopen("libgof2hdaa.so", RTLD_NOW | RTLD_GLOBAL);
     if (!h) { fprintf(stderr, "[host] cannot load libgof2hdaa.so: %s\n", dlerror()); return 1; }
-    {
-        Dl_info di;
-        if (dladdr((void*)resolve_required(h, "JNI_OnLoad"), &di))
-            fprintf(stderr, "[host] libgof2hdaa.so base=%p\n", di.dli_fbase);
-    }
 
 #define SYM(var, n) var = (typeof(var))resolve_required(h, n)
     SYM(p_JNI_OnLoad, "JNI_OnLoad");
@@ -517,10 +401,8 @@ int main(int argc, char** argv) {
     SYM(p_resetScreenshotFlag, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_resetScreenshotFlag");
     SYM(p_handleTouchEvent, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_handleTouchEvent");
     SYM(p_handleAccelerometer, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_handleAccelerometer");
-    /* optional; Java wrapper calls this on Android back button */
     p_backbutton_fn = (typeof(p_backbutton_fn))
         dlsym(h, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_BackButtonPressed");
-    /* optional; Java wrapper calls this with the origami super club key string */
     p_setOrigamiSuperClub = (typeof(p_setOrigamiSuperClub))
         dlsym(h, "Java_net_fishlabs_gof2hdallandroid2012_GOF2HD2012_SetOrigamiSuperClub");
 #undef SYM
@@ -533,7 +415,6 @@ int main(int argc, char** argv) {
 
     printf("[host] JNI_OnLoad...\n");
     if (p_JNI_OnLoad(&g_vm) != 0) fprintf(stderr, "[host] warn: JNI_OnLoad != 0\n");
-
     printf("[host] setZIPPath(%s)\n", obb_path);
     p_setZIPPath(env, cls, obb);
     printf("[host] SetDirectories(%s, obbdir)\n", data_dir);
@@ -545,38 +426,37 @@ int main(int argc, char** argv) {
     p_setEnvironmentVariables(env, cls, (jobject)&fake_context);
     printf("[host] setCountryCodeOfDevice(0)\n");
     p_setCountryCodeOfDevice(env, cls, 0);
-
     if (p_setOrigamiSuperClub) {
         static char origami[] = "0123456789ABCDEF0123456789ABCDEF";
-        jstring oj = (jstring)mk_jstring(origami);
         printf("[host] setOrigamiSuperClub(...)\n");
-        p_setOrigamiSuperClub(env, cls, oj);
+        p_setOrigamiSuperClub(env, cls, (jstring)mk_jstring(origami));
     }
 
-    printf("[host] init EGL from %s (red=%s)\n", getenv("GOF_EGL_LIB") ? getenv("GOF_EGL_LIB") : "/usr/lib32/libEGL.so.1",
-           getenv("GOF_RED_TEST") ? "yes" : "no");
-    if (setup_egl() != 0 && getenv("GOF_EGL_REQUIRED"))
+    printf("[host] init SDL/EGL...\n");
+    if (sdl_video_init() != 0 && getenv("GOF_EGL_REQUIRED"))
         return 1;
+
     printf("[host] initialize(%d, %d)\n", g_width, g_height);
     p_initialize(env, cls, g_width, g_height);
     printf("[host] resize(%d, %d)\n", g_width, g_height);
     p_resize(env, cls, g_width, g_height);
 
-    printf("[host] render loop started\n");
-    snapshot_maps();
-    open_touch_fifo();
-    g_pad_fd = open_pad();
-    if (g_pad_fd >= 0)
-        fprintf(stderr, "[pad] virtual gamepad connected\n");
+    add_dev_mapping();
+    g_pad = find_pad();
+    if (g_pad)
+        fprintf(stderr, "[pad] gamepad ready\n");
     else
-        fprintf(stderr, "[pad] no virtual gamepad (pad-server not running?)\n");
+        fprintf(stderr, "[pad] no gamepad found (run pad-server?)\n");
+
+    printf("[host] render loop started\n");
+    open_touch_fifo();
     int frames = 0;
     while (1) {
         long t0 = now_ms();
         pump_touch(env, cls);
-        pump_pad(env, cls);
+        pump_sdl_input(env, cls);
         p_renderstep(env, cls, t0);
-        swap_egl();
+        sdl_swap();
         frames++;
         if (frames % 120 == 0)
             printf("[host] %d frames; logo=%d menu=%d exit=%d\n",

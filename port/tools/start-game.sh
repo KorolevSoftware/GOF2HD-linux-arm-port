@@ -60,6 +60,8 @@ echo "[4] запускаю игру"
 cd "$RUN_DIR"
 export GOF_FB=/dev/fb0
 export GOF_SHOW_CURSOR=1
+export SDL_VIDEODRIVER=mali
+export SDL_AUDIODRIVER=dummy
 export LD_LIBRARY_PATH=.:/usr/lib32
 : > "$LOG_FILE"
 setsid ./gof2hd "$APK" "$OBB" "$DATA" "$WIDTH" "$HEIGHT" >"$LOG_FILE" 2>&1 </dev/null &
