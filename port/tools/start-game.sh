@@ -42,7 +42,6 @@ fi
 # 3) запуск
 echo "[3] запускаю игру"
 cd "$RUN_DIR"
-export GOF_FB=/dev/fb0
 export GOF_SHOW_CURSOR=1
 export SDL_AUDIODRIVER=dummy
 export LD_LIBRARY_PATH=.:/usr/lib32

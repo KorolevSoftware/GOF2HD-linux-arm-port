@@ -45,7 +45,8 @@ cd /root/gof2hd/port
 - мост GLES2 (`gles-stub/gles-bridge.c` → `libGLESv2.so`, форвардит только
   GLES в libmali; движок использует лишь GLES2 и EGL не трогает),
 - звуковые заглушки FMOD (`libfmodex`, `libfmodevent`),
-- хост `gof2hd` (SDL2: `-lSDL2`),
+- хост `gof2hd` (SDL2: `-lSDL2`; модуль оверлея `host/wrap_overlay.c`
+  линкуется напрямую с собранным мостом `libGLESv2.so`),
 - патчит `e_flags` у `libgof2hdaa.so`,
 - кладёт всё в `port/run-native/`.
 
@@ -79,7 +80,6 @@ bash /root/gof2hd/port/tools/start-game.sh
 cd /root/gof2hd/port/run-native
 
 export SDL_AUDIODRIVER=dummy
-export GOF_FB=/dev/fb0
 export GOF_SHOW_CURSOR=1
 export LD_LIBRARY_PATH=/root/gof2hd/port/run-native:/usr/lib32
 
@@ -105,7 +105,7 @@ export LD_LIBRARY_PATH=/root/gof2hd/port/run-native:/usr/lib32
 
 | Действие | Кнопка | Эффект |
 |---|---|---|
-| Левый стик | `a0`/`a1` | курсор движется со скоростью отклонения (deadzone ~4000) |
+| Левый стик | `a0`/`a1` | курсор движется со скоростью отклонения (deadzone ~4000); стик опрашивается каждый кадр — удерживаемый отклонённым стик продолжает двигать курсор |
 | Крестовина | hat0 | курсор на 10 px (UP=1, RIGHT=2, DOWN=4, LEFT=8 — факт для прошивки) |
 | **A** | `b0` | тап (touch down/up) в позиции курсора |
 | **B** | `b3` | Back (BackButtonPressed — закрыть меню/диалог) |
@@ -146,22 +146,32 @@ echo "$PID 0 320 240" > /tmp/gof2hd_touch && sleep 0.2 \
 ### Курсор-прицел (GOF_SHOW_CURSOR)
 
 Чтобы видеть, куда тапнёт геймпад, хост рисует крест-прицел в позиции
-виртуального пальца прямо в framebuffer поверх кадра (после swap):
+виртуального пальца прямо в GL-кадр (модуль `port/host/wrap_overlay.c`):
+после кадра движка, но **до** `SDL_GL_SwapWindow`, поэтому курсор физически
+не может мигать (в отличие от старой записи в сырой fb0):
 
 ```sh
 export GOF_SHOW_CURSOR=1
 ```
 
 - Шаг движения от крестовины — **10 px** на событие (см. `pad_move`).
-- Отрисовка: mmap `/dev/fb0`, крест 25×25 px, 3px толщиной, цвет (255,80,80)
-  BGRA.
+- Отрисовка: минимальный GLES2-шейдер (vec2-атрибут + орто-проекция
+  2D, строится из разрешения игры), крест 25×25 px, 3px толщиной, цвет
+  (255,80,80), `glDrawArrays(GL_LINES)` перед свапом, с сохранением
+  состояния GL движка (программа/буфер/вьюпорт).
+- Модуль **не использует `dlopen`**: `gof2hd` линкуется с мостом
+  `libGLESv2.so` напрямую (`NEEDED` на наш шим в `run-native`), вызовы —
+  обычные `gl*()`. Мост экспортирует softfp-входы (`pcs("aapcs")`),
+  поэтому каждый прототип в `wrap_overlay.c` помечен
+  `__attribute__((pcs("aapcs")))` — float-аргументы (`glUniform4f`,
+  `glUniformMatrix4fv`) передаются в r0–r3, как ждёт шим.
+  Потеря символа при этом — ошибка линковки, а не тихий фейл в рантайме.
 
 ## 5. Переменные окружения (опционально)
 
 | Переменная | Назначение |
 |---|---|
-| `GOF_FB` | Путь fbdev-устройства (по умолчанию `/dev/fb0`) |
-| `GOF_SHOW_CURSOR` | Рисовать курсор-прицел виртуального пальца поверх кадра |
+| `GOF_SHOW_CURSOR` | Рисовать курсор-прицел виртуального пальца в GL-кадре (модуль `wrap_overlay`) |
 | `GOF_VERBOSE_JNI` | Логировать JNI-вызовы движка |
 | `GOF_GDB` | Не устанавливать обработчик краша (под gdbserver) |
 | `GOF_TRACE` | Трассировать GLES-вызовы |
@@ -187,7 +197,7 @@ export GOF_SHOW_CURSOR=1
 - Ввод — встроенный геймпад через SDL2 (см. раздел 4); маппинг заточен
   под факт устройства консоли.
 - Проверено: логотип → главное меню с анимированным фоном, стабильный рендер,
-  кур-сор движется стиком/крестовиной, A — тап, B — Back. Дальнейший
+  курсор движется стиком/крестовиной, A — тап, B — Back. Дальнейший
   прогресс по кампании на устройстве не проверялся.
 
 ## 8. Структура проекта
@@ -195,6 +205,7 @@ export GOF_SHOW_CURSOR=1
 | Компонент | Файл | Роль |
 |---|---|---|
 | host | `host/gof2hd.c` | SDL2-окно/EGL + геймпад-ввод + фейковая виртуальная JVM-обёртка |
+| GL-оверлей | `host/wrap_overlay.c/.h` | курсор-прицел в GL-кадре перед свапом; линкуется с `libGLESv2.so` (`pcs("aapcs")`-прототипы) |
 | JNI-эмуляция | `host/jni.c`, `host/jni.h` | Фейк JavaVM/Jobject/jstring |
 | libc shim | `shim/shim.c`, `abi.c`, `sscanf.c` | bionic-символы `@LIBC` → glibc |
 | libm shim | `shim`/libm.c, `libm.map` | float-math `@LIBC` |

@@ -36,7 +36,10 @@
 - Hat-значения крестовины (прошивка): UP=1, RIGHT=2, DOWN=4, LEFT=8
   (сдвиг от SDL-стандарта 0/1/2/3 — уже учтено в маппинге).
 - Логика: левый стик → курсор (скорость ∝ отклонению, deadzone 4000,
-  `SDL_CONTROLLER_AXIS_LEFTX/LEFTY`), крестовина → шаг 10 px,
+  `SDL_CONTROLLER_AXIS_LEFTX/LEFTY`; стик опрашивается каждый кадр
+  (`pump_stick_cursor`), поэтому удерживаемый в отклонении стик
+  продолжает двигать курсор — события axis-motion при этом не приходят),
+  крестовина → шаг 10 px,
   A (`b0`) → touch down/up (pid 722), B (`b3`) → BackButtonPressed.
 - **Гироскоп-режим** (`g_gyro_mode`, тумблер START = `leftshoulder`/idx=9):
   левый стик эмулирует акселерометр → `Java_..._ToJNI_handleAccelerometer`.
@@ -68,6 +71,43 @@ az = 1.0f + ny; // engine Z (питч) = 1.0 + стик Y  (нейтраль Z=1
 ```
 Проверено на устройстве: руль и питч работают, в нейтрали корабль летит ровно.
 
+### Курсор-оверлей (`wrap_overlay`) и движение стиком
+
+**Почему курсор мигал (история).** Старый вариант рисовал крест-прицел
+напрямую в память `/dev/fb0` (mmap, BGRA) сразу **после** `SDL_GL_SwapWindow`.
+Презентация кадра драйвером mali-fbdev (свап/пан, `SDL_GL_SetSwapInterval(0)` —
+неблокирующий) асинхронно перезаписывала этот регион каждый кадр => курсор
+был виден только в короткие окна и моргал на кадровой частоте.
+
+**Решение.** Модуль `port/host/wrap_overlay.c` рисует крест в **тот же GL-кадр**:
+вызов после `p_renderstep()`, но **до** `SDL_GL_SwapWindow()` (см. `sdl_swap()`
+в `gof2hd.c`). Курсор презентуется вместе с кадром и физически не может
+моргать. Шейдер минимальный: `attribute vec2 aPos` + `uniform mat4 uProj`
+(ортогональная 2D-проекция, строится один раз из разрешения игры
+в `overlay_init(w,h)`) + `uniform vec4 uColor`, без текстур и блендинга.
+Перед отрисовкой состояние движка сохраняется (`glGetIntegerv`:
+CURRENT_PROGRAM / ARRAY_BUFFER_BINDING / VIEWPORT), после — восстанавливается.
+
+**ABI-последствия линковки.** `gof2hd` линкуется с мостом `libGLESv2.so`
+напрямую (полный путь в build-native.sh), без `dlopen`/`dlsym`. Но мост
+экспортирует softfp-входы (`pcs("aapcs")`), а хост hardfp => каждый прототип
+в `wrap_overlay.c` помечается `__attribute__((pcs("aapcs")))` — float-аргументы
+(`glUniform4f`, `glUniformMatrix4fv`) едут в r0–r3. Цена: потеря символа —
+ошибка линковки, а не тихий фейл.
+
+**Грабли линковки.** Если добавить `-L"$OUT"` (run-native) в строку хоста —
+`-ldl` первым найдёт пустой стаб `run-native/libdl.so` (пустышка для движка)
+и упадёт `undefined reference to dlerror@@GLIBC_2.34`. Линковать именно
+абсолютным путём `"$OUT/libGLESv2.so"` (DT_NEEDED с полным путём).
+
+**Движение курсора стиком (polling).** `SDL_CONTROLLERAXISMOTION` приходит
+только пока значение оси меняется: удерживаемый в отклонении стик —
+и курсор стоял. Исправлено: `pump_stick_cursor()` в `gof2hd.c` опрашивает
+левый стик каждый кадр (`SDL_GameControllerGetAxis`), как уже делал
+`pump_gyro`, скорость ∝ отклонению (deadzone 4000, макс 8 px/кадр ≈ 240 px/с),
+дробный аккумулятор для плавного медленного хода. В gyro-режиме стик
+по-прежнему уходит акселерометру.
+
 ## 4. Сборка и запуск — 3 команды
 
 ```sh
@@ -83,7 +123,10 @@ bash /root/gof2hd/port/tools/start-game.sh
 - Сборка идёт ТОЛЬКО на устройстве (`gcc/g++ arm-linux-gnueabihf`, SDL2 dev
   в системе). `build-native.sh` собирает: shim (libc/liblog/libandroid/libm/libdl),
   GLES+EGL мост (`gles-bridge.c` → `libGLESv2.so`; EGL — SDL находит сам),
-  FMOD-заглушки, хост `gof2hd` (`-lSDL2`), патчит e_flags игры soft→hardfp.
+  FMOD-заглушки, хост `gof2hd` (`-lSDL2`; `wrap_overlay.c` линкуется
+  напрямую с `run-native/libGLESv2.so` по полному пути — НЕ через `-L`,
+  чтобы каталог run-native не попал в поиск `-l` и `-ldl` не схватил
+  пустой стаб `run-native/libdl.so`), патчит e_flags игры soft→hardfp.
 - `start-game.sh` ставит env: `SDL_AUDIODRIVER=dummy` (видеодрайвер SDL2
   выбирает сам),
   `GOF_SHOW_CURSOR=1`, `LD_LIBRARY_PATH=.:/usr/lib32`.
@@ -92,7 +135,7 @@ bash /root/gof2hd/port/tools/start-game.sh
 
 ```sh
 cd /root/gof2hd/port/run-native
-export SDL_AUDIODRIVER=dummy GOF_FB=/dev/fb0 GOF_SHOW_CURSOR=1
+export SDL_AUDIODRIVER=dummy GOF_SHOW_CURSOR=1
 export LD_LIBRARY_PATH=/root/gof2hd/port/run-native:/usr/lib32
 ./gof2hd /root/gof2hd/base.apk \
     '/root/gof2hd/obb/net.fishlabs.gof2hdallandroid2012/main.47947006.net.fishlabs.gof2hdallandroid2012.obb' \
@@ -232,14 +275,16 @@ attr=36, mutexattr=4, condattr=4, sem_t=16, key_t=4, once_t=4.
 - git push невозможен из среды (SSH с ключом отклоняется) — пушит пользователь.
 - gdbserver: `gdbserver 0.0.0.0:2345 ./gof2hd ...`; клиент —
   `arm-buildroot-linux-gnueabi-gdb` + `target remote <dev-ip>:2345`.
-- Энва-флаги отладки: `GOF_TRACE` (GL-трейс), `GOF_FB`,
-  `GOF_GDB`, `GOF_VERBOSE_JNI`, `GOF_SHOW_CURSOR`.
+- Энва-флаги отладки: `GOF_TRACE` (GL-трейс),
 
+  `GOF_GDB`, `GOF_VERBOSE_JNI`, `GOF_SHOW_CURSOR` (курсор-прицел,
+  рисуется модулем `wrap_overlay` в GL-кадре перед свапом).
 ## 10. Структура проекта
 
 | Компонент | Файл | Роль |
 |---|---|---|
-| host | `host/gof2hd.c` | SDL2-окно/EGL + геймпад-ввод + движения Java-обёртки |
+| host | `host/gof2hd.c` | SDL2-окно/EGL + геймпад-ввод + движение Java-обёртки |
+| GL-оверлей | `port/host/wrap_overlay.c/.h` | курсор-прицел в GL-кадре перед свапом; линкуется с `libGLESv2.so` (`pcs("aapcs")`-прототипы) |
 | JNI-эмуляция | `host/jni.c`, `jni.h` | Фейковые JavaVM/Jobject/jstring |
 | libc shim | `shim/shim.c`, `abi.c`, `sscanf.c`, `stdio.c` | трансляция `@LIBC`-набора (FILE/stat/pthread), спецсимволы |
 | libm shim | `shim/libm.c`, `libm.map` | float-math `@LIBC` (softfp→hardfp) |
