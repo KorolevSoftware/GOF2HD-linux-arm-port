@@ -227,7 +227,7 @@ attr=36, mutexattr=4, condattr=4, sem_t=16, key_t=4, once_t=4.
 - git push невозможен из среды (SSH с ключом отклоняется) — пушит пользователь.
 - gdbserver: `gdbserver 0.0.0.0:2345 ./gof2hd ...`; клиент —
   `arm-buildroot-linux-gnueabi-gdb` + `target remote <dev-ip>:2345`.
-- Энва-флаги отладки: `GOF_TRACE` (GL-трейс), `GOF_FB`, `GOF_AUTO_TOUCH`,
+- Энва-флаги отладки: `GOF_TRACE` (GL-трейс), `GOF_FB`,
   `GOF_GDB`, `GOF_VERBOSE_JNI`, `GOF_SHOW_CURSOR`.
 
 ## 10. Структура проекта

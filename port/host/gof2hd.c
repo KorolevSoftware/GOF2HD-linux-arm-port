@@ -521,11 +521,6 @@ int main(int argc, char** argv) {
             printf("[host] %d frames; logo=%d menu=%d exit=%d\n",
                    frames, p_getLogoShown(env, cls),
                    p_isInMainMenu(env, cls), p_getExitFlag(env, cls));
-        if (getenv("GOF_AUTO_TOUCH") && frames % 8 == 0) {
-            int cx = g_width / 2, cy = g_height / 2;
-            p_handleTouchEvent(env, cls, 722, 0, cx, cy);
-            p_handleTouchEvent(env, cls, 722, 1, cx, cy);
-        }
         if (p_getExitFlag(env, cls) == -1) break;
         long el = now_ms() - t0;
         if (el < 33) usleep((33 - el) * 1000);
