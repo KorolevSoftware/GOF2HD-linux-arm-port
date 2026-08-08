@@ -65,8 +65,9 @@ cd /root/gof2hd/port
 bash /root/gof2hd/port/tools/start-game.sh
 ```
 
-Скрипт ставит окружение: `SDL_VIDEODRIVER=mali`, `SDL_AUDIODRIVER=dummy`,
-`LD_LIBRARY_PATH=.:/usr/lib32`, `GOF_SHOW_CURSOR=1`.
+Скрипт ставит окружение: `SDL_AUDIODRIVER=dummy`,
+`LD_LIBRARY_PATH=.:/usr/lib32`, `GOF_SHOW_CURSOR=1`. Видеодрайвер SDL2
+выбирает сам (без `SDL_VIDEODRIVER`).
 
 Настройки через окружение (см. таблицу переменных ниже):
 `GOF_ROOT`, `GOF_LOG`. Лог — `<GOF_ROOT>/run.txt`
@@ -77,7 +78,6 @@ bash /root/gof2hd/port/tools/start-game.sh
 ```bash
 cd /root/gof2hd/port/run-native
 
-export SDL_VIDEODRIVER=mali
 export SDL_AUDIODRIVER=dummy
 export GOF_FB=/dev/fb0
 export GOF_SHOW_CURSOR=1
@@ -167,7 +167,6 @@ export GOF_SHOW_CURSOR=1
 | `GOF_TRACE` | Трассировать GLES-вызовы |
 | `GOF_LOG` | Путь лога (использует `start-game.sh`) |
 | `GOF_ROOT` | Корень порта на устройстве (через `start-game.sh`) |
-| `SDL_VIDEODRIVER` | Видеодрайвер SDL2 (у нас — `mali`) |
 | `SDL_AUDIODRIVER` | Аудиодрайвер (для порта — `dummy`) |
 | `LD_LIBRARY_PATH` | Должен включать `run-native` и `/usr/lib32` |
 

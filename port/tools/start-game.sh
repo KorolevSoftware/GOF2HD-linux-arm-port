@@ -27,8 +27,11 @@ fi
 OLD=$(pgrep -f '/root/gof2hd/base.apk' || true)
 if [ -n "$OLD" ]; then
     echo "[2] убиваю старую игру: $OLD"
-    kill $OLD 2>/dev/null || true
-    sleep 1
+    kill -9 $OLD 2>/dev/null || true   # SIGTERM движок глотает — только SIGKILL
+    for i in 1 2 3; do
+        pgrep -f '/root/gof2hd/base.apk' >/dev/null 2>&1 || break
+        sleep 1
+    done
 fi
 
 if [ -z "$OBB" ]; then
@@ -41,7 +44,6 @@ echo "[3] запускаю игру"
 cd "$RUN_DIR"
 export GOF_FB=/dev/fb0
 export GOF_SHOW_CURSOR=1
-export SDL_VIDEODRIVER=mali
 export SDL_AUDIODRIVER=dummy
 export LD_LIBRARY_PATH=.:/usr/lib32
 : > "$LOG_FILE"

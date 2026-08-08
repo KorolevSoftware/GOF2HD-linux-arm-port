@@ -83,14 +83,15 @@ bash /root/gof2hd/port/tools/start-game.sh
   в системе). `build-native.sh` собирает: shim (libc/liblog/libandroid/libm/libdl),
   GLES+EGL мост (`gles-bridge.c` → `libGLESv2.so`, из него же `libEGL.so(.1)`),
   FMOD-заглушки, хост `gof2hd` (`-lSDL2`), патчит e_flags игры soft→hardfp.
-- `start-game.sh` ставит env: `SDL_VIDEODRIVER=mali`, `SDL_AUDIODRIVER=dummy`,
+- `start-game.sh` ставит env: `SDL_AUDIODRIVER=dummy` (видеодрайвер SDL2
+  выбирает сам),
   `GOF_SHOW_CURSOR=1`, `LD_LIBRARY_PATH=.:/usr/lib32`.
 
 Ручной запуск:
 
 ```sh
 cd /root/gof2hd/port/run-native
-export SDL_VIDEODRIVER=mali SDL_AUDIODRIVER=dummy GOF_FB=/dev/fb0 GOF_SHOW_CURSOR=1
+export SDL_AUDIODRIVER=dummy GOF_FB=/dev/fb0 GOF_SHOW_CURSOR=1
 export LD_LIBRARY_PATH=/root/gof2hd/port/run-native:/usr/lib32
 ./gof2hd /root/gof2hd/base.apk \
     '/root/gof2hd/obb/net.fishlabs.gof2hdallandroid2012/main.47947006.net.fishlabs.gof2hdallandroid2012.obb' \
