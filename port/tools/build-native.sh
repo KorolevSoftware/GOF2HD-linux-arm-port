@@ -11,56 +11,35 @@ CXX="${CXX:-arm-linux-gnueabihf-g++}"
 CFLAGS="${CFLAGS:--O2 -fno-stack-protector -fno-builtin}"
 OUT="$P/run-native"
 
-echo "== locating GLES provider =="
-GLES_LIB=""
-for c in libmali.so libGLESv2.so libGLESv2.so.2; do
-    if [ -e "/usr/lib/$c" ] || [ -e "/usr/lib32/$c" ] || [ -e "/usr/lib/arm-linux-gnueabihf/$c" ]; then
-        GLES_LIB="$c"; break
-    fi
-done
-if [ -z "$GLES_LIB" ]; then
-    echo "!! no GLES library found; will build gles-bridge anyway"
-fi
-echo "   using: ${GLES_LIB:-none}"
+rm -rf "$OUT"
+mkdir -p "$OUT"
 
 echo "== building shim (hardfp, pcs aapcs entries) =="
 "$CC" $CFLAGS -shared -fPIC -std=gnu89 \
-    -Wl,--version-script="$P/shim/version.map" -o "$P/shim/libc.so" \
+    -Wl,--version-script="$P/shim/version.map" -o "$OUT/libc.so" \
     "$P/shim/shim.c" "$P/shim/sscanf.c" "$P/shim/stdio.c" "$P/shim/abi.c" -ldl
-"$CC" $CFLAGS -shared -fPIC -o "$P/shim/liblog.so" "$P/shim/liblog.c"
-"$CC" $CFLAGS -shared -fPIC -Wl,--version-script="$P/shim/libm.map" -o "$P/shim/libm.so" "$P/shim/libm.c" -ldl
+"$CC" $CFLAGS -shared -fPIC -o "$OUT/liblog.so" "$P/shim/liblog.c"
+"$CC" $CFLAGS -shared -fPIC -Wl,--version-script="$P/shim/libm.map" -o "$OUT/libm.so" "$P/shim/libm.c" -ldl
 for l in libandroid libdl; do
-    printf '' | "$CC" $CFLAGS -shared -fPIC -Wl,--version-script="$P/shim/emptyver.map" -x c - -o "$P/shim/$l.so"
+    printf '' | "$CC" $CFLAGS -shared -fPIC -Wl,--version-script="$P/shim/emptyver.map" -x c - -o "$OUT/$l.so"
 done
 
 echo "== building gles bridge =="
-"$CC" $CFLAGS -shared -fPIC -o "$P/gles-stub/libGLESv2.so" "$P/gles-stub/gles-bridge.c" -ldl
+"$CC" $CFLAGS -shared -fPIC -o "$OUT/libGLESv2.so" "$P/gles-stub/gles-bridge.c" -ldl
 
 echo "== building fmod stubs =="
-"$CC" $CFLAGS -shared -fPIC -o "$P/fmodex-stub/libfmodex.so" "$P/fmodex-stub/fmodex_stub.c"
-"$CXX" $CFLAGS -shared -fPIC -o "$P/fmodex-stub/libfmodevent.so" "$P/fmodex-stub/fmodevent_stub.cpp"
+"$CC" $CFLAGS -shared -fPIC -o "$OUT/libfmodex.so" "$P/fmodex-stub/fmodex_stub.c"
+"$CXX" $CFLAGS -shared -fPIC -o "$OUT/libfmodevent.so" "$P/fmodex-stub/fmodevent_stub.cpp"
 
 echo "== building host (SDL2) =="
-SDL_INC=""
-for d in /usr/include/arm-linux-gnueabihf /usr/include; do
-    [ -d "$d/SDL2" ] && SDL_INC="$SDL_INC -I$d"
-done
-SDL_LIBS=""
-for d in /usr/lib32 /usr/lib/arm-linux-gnueabihf /usr/lib; do
-    [ -e "$d/libSDL2.so" ] && SDL_LIBS="$SDL_LIBS -L$d"
-done
-"$CC" $CFLAGS $SDL_INC -rdynamic -o "$P/host/gof2hd" "$P/host/gof2hd.c" "$P/host/jni.c" $SDL_LIBS -lSDL2 -ldl -lgcc_s -lm
+"$CC" $CFLAGS -rdynamic -o "$OUT/gof2hd" "$P/host/gof2hd.c" "$P/host/jni.c" \
+    -L/usr/lib32 -lSDL2main -lSDL2 -ldl -lgcc_s -lm
 
-echo "== assembling run-native =="
-rm -rf "$OUT"
-mkdir -p "$OUT"
-cp "$P/shim"/libc.so "$P/shim"/liblog.so "$P/shim"/libandroid.so "$P/shim"/libm.so "$P/shim"/libdl.so "$OUT"/
-cp "$P/gles-stub"/libGLESv2.so "$OUT"/libGLESv2.so
-cp "$P/gles-stub"/libGLESv2.so "$OUT"/libGLESv1_CM.so
-cp "$P/host/gof2hd" "$OUT"/
+echo "== adding game engine =="
 [ -f /root/gof2hd/libgof2hdaa.so ] && \
     cp /root/gof2hd/libgof2hdaa.so "$OUT"/ || \
-    echo "!! libgof2hdaa.so not found at /root/gof2hd/"
+    { echo "!! libgof2hdaa.so not found at /root/gof2hd/"; exit 1; }
+
 echo "== patching game e_flags soft-float -> hard-float (0x5000200 -> 0x5000400) =="
 python3 - "$OUT/libgof2hdaa.so" <<'PYEOF'
 import struct, sys
@@ -74,10 +53,9 @@ f.write(struct.pack("<I", new))
 f.close()
 print(f"  e_flags 0x{v:08x} -> 0x{new:08x}")
 PYEOF
-cp "$P/fmodex-stub"/libfmodex.so "$P/fmodex-stub"/libfmodevent.so "$OUT"/
 
 echo "== patching game version tables -> unversioned imports (patch-versions.py) =="
-python3 "$P/tools/patch-versions.py" "$OUT/libgof2hdaa.so" "$P/shim/libc.so" "$P/shim/libm.so"
+python3 "$P/tools/patch-versions.py" "$OUT/libgof2hdaa.so" "$OUT/libc.so" "$OUT/libm.so"
 
 echo "== done =="
 ls -la "$OUT"
