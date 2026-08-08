@@ -20,9 +20,9 @@
 
 > Движок собран с **softfp ABI** (armeabi-v7a, aapcs). Порт собирает всё в hardfp
 > и оборачивает мягкие float-вызовы движка через ABI-мост в `shim/` и
-> `gles-stub/gles-bridge.c`. Мост также экспортирует EGL-функции в `libmali.so`
-> (нужно для SDL). Патч `e_flags` в `libgof2hdaa.so` делает бинарь
-> совместимым с линкером — выполняется автоматически при сборке.
+> `gles-stub/gles-bridge.c`. Движок использует только GLES2 (контекст он не
+> создаёт) — EGL для него не нужен вовсе. Патч `e_flags` в `libgof2hdaa.so`
+> делает бинарь совместимым с линкером — выполняется автоматически при сборке.
 
 ## 1. Копирование исходников на устройство
 
@@ -42,16 +42,16 @@ cd /root/gof2hd/port
 
 Скрипт:
 - собирает shim-библиотеки (`libc/liblog/libandroid/libm/libdl`),
-- мост GLES2 + EGL (`gles-stub/gles-bridge.c` → `libGLESv2.so`, форвардит
-  GLES в libmali; из него же кладёт `libEGL.so`/`libEGL.so.1` — их грузит SDL),
+- мост GLES2 (`gles-stub/gles-bridge.c` → `libGLESv2.so`, форвардит только
+  GLES в libmali; движок использует лишь GLES2 и EGL не трогает),
 - звуковые заглушки FMOD (`libfmodex`, `libfmodevent`),
 - хост `gof2hd` (SDL2: `-lSDL2`),
 - патчит `e_flags` у `libgof2hdaa.so`,
 - кладёт всё в `port/run-native/`.
 
-> Примечание: `/usr/lib32/libEGL.so.1` на прошивке — пустышка без EGL-символов.
-> Поэтому SDL грузит наш `libEGL.so.1` из `run-native`, а все EGL-символы
-> форвардятся на реальные из `libmali.so`.
+> Примечание: `/usr/lib32/libEGL.so.1` на прошивке — пустышка без EGL-символов,
+> но SDL2 сам находит и грузит EGL по своим путям (в т.ч. libmali), так что
+> в `run-native` ничего для EGL класть не нужно.
 
 ## 3. Запуск
 
@@ -198,7 +198,7 @@ export GOF_SHOW_CURSOR=1
 | JNI-эмуляция | `host/jni.c`, `host/jni.h` | Фейк JavaVM/Jobject/jstring |
 | libc shim | `shim/shim.c`, `abi.c`, `sscanf.c` | bionic-символы `@LIBC` → glibc |
 | libm shim | `shim`/libm.c, `libm.map` | float-math `@LIBC` |
-| GLES+EGL bridge | `gles-stub/gles-bridge.c` | мост softfp→hardfp в libmali + EGL-форвардеры |
+| GLES bridge | `gles-stub/gles-bridge.c` | мост softfp→hardfp GLES2 в libmali (EGL движок не использует) |
 | fmod stubs | `fmodex-stub/` | заглушки аудио |
 | Сборка | `tools/build-native.sh` | всё на устройстве |
 | Запуск | `tools/start-game.sh` | одна команда |
