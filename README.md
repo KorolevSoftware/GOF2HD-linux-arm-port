@@ -164,7 +164,6 @@ export GOF_SHOW_CURSOR=1
 | `GOF_VERBOSE_JNI` | Логировать JNI-вызовы движка |
 | `GOF_GDB` | Не устанавливать обработчик краша (под gdbserver) |
 | `GOF_TRACE` | Трассировать GLES-вызовы |
-| `GOF_EGL_REQUIRED` | Умереть, если SDL/EGL-контекст не создан |
 | `GOF_LOG` | Путь лога (использует `start-game.sh`) |
 | `GOF_WIDTH`/`GOF_HEIGHT` | Разрешение (через `start-game.sh`) |
 | `GOF_ROOT` | Корень порта на устройстве (через `start-game.sh`) |

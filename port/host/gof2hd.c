@@ -491,7 +491,7 @@ int main(int argc, char** argv) {
     }
 
     printf("[host] init SDL/EGL...\n");
-    if (sdl_video_init() != 0 && getenv("GOF_EGL_REQUIRED"))
+    if (sdl_video_init() != 0)
         return 1;
 
     printf("[host] initialize(%d, %d)\n", g_width, g_height);
