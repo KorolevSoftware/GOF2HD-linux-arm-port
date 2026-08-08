@@ -16,6 +16,7 @@
  */
 #define _GNU_SOURCE
 #include "jni.h"
+#include "wrap_overlay.h"
 #include <SDL2/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,7 +28,6 @@
 #include <execinfo.h>
 #include <fcntl.h>
 #include <sys/stat.h>
-#include <sys/mman.h>
 #include <errno.h>
 
 /* ---- crash handler ---- */
@@ -122,35 +122,10 @@ static long now_ms(void) {
     return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-/* ---- cursor drawn on fb0 (shared with SDL mali-fbdev surface) ---- */
+/* ---- cursor (virtual finger) position, drawn by wrap_overlay ---- */
 static int g_pad_x = 320, g_pad_y = 240;   /* virtual finger (defined in pad section) */
 static int g_pad_down = 0;
-static int g_cursor_fb = -1;
-static unsigned char* g_cursor_map = NULL;
-
-static void draw_cursor_on_fb(void) {
-    if (!getenv("GOF_SHOW_CURSOR")) return;
-    if (g_cursor_fb < 0) {
-        const char* p = getenv("GOF_FB");
-        g_cursor_fb = open(p ? p : "/dev/fb0", O_RDWR);
-        if (g_cursor_fb >= 0)
-            g_cursor_map = mmap(NULL, g_width * g_height * 4,
-                                PROT_READ | PROT_WRITE, MAP_SHARED, g_cursor_fb, 0);
-    }
-    if (!g_cursor_map) return;
-    int cx = g_pad_x, cy = g_pad_y;
-    if (cx < 0 || cy < 0 || cx >= g_width || cy >= g_height) return;
-    for (int i = -12; i <= 12; i++) {
-        for (int t = 0; t < 3; t++) {
-            int x1 = cx + i, y1 = cy - t + 1;
-            int x2 = cx - t + 1, y2 = cy + i;
-            unsigned char* p1 = g_cursor_map + ((size_t)y1 * g_width + x1) * 4;
-            unsigned char* p2 = g_cursor_map + ((size_t)y2 * g_width + x2) * 4;
-            if (x1 >= 0 && x1 < g_width && y1 >= 0 && y1 < g_height) { p1[2]=255; p1[1]=80; p1[0]=80; }
-            if (x2 >= 0 && x2 < g_width && y2 >= 0 && y2 < g_height) { p2[2]=255; p2[1]=80; p2[0]=80; }
-        }
-    }
-}
+static int g_fire_down = 0;                /* X button -> touch in the fire zone */
 
 /* ---- gamepad: SDL2 joystick subsystem sees our uinput device ---- */
 static SDL_Window* g_win = NULL;
@@ -244,6 +219,20 @@ static void handle_btn(JNIEnv* env, jclass cls, int ctrl_btn, int down) {
             p_backbutton_fn(env, cls);
         }
         break;
+    case SDL_CONTROLLER_BUTTON_X:
+        /* Fire: engine reads Hud::firePressed() (bit 4 of Hud+0x284), which is
+         * set by a touch landing in the fire zone (right/bottom of the screen).
+         * Touch pid 723 (cursor uses 722) so the two fingers don't collide. */
+        if (down && !g_fire_down) {
+            g_fire_down = 1;
+            p_handleTouchEvent(env, cls, 723, 0, g_width - g_width / 8, g_height - g_height / 8);
+            fprintf(stderr, "[pad] fire down\n");
+        } else if (!down && g_fire_down) {
+            g_fire_down = 0;
+            p_handleTouchEvent(env, cls, 723, 1, g_width - g_width / 8, g_height - g_height / 8);
+            fprintf(stderr, "[pad] fire up\n");
+        }
+        break;
     case SDL_CONTROLLER_BUTTON_START:
     case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
         if (down) {
@@ -308,6 +297,28 @@ static void pump_gyro(JNIEnv* env, jclass cls) {
     p_handleAccelerometer(env, cls, ax, ay, az);
 }
 
+/* Cursor from the left stick, polled every frame so holding the stick
+ * deflected keeps the cursor moving (axis-motion events stop when the
+ * value stops changing).  Speed is proportional to deflection, with a
+ * fractional accumulator for smooth slow movement. */
+static void pump_stick_cursor(void) {
+    if (!g_pad) return;
+    if (g_gyro_mode) return;   /* in gyro mode the stick feeds the accelerometer */
+    static float rem_x = 0.0f, rem_y = 0.0f;
+    const int dz = 4000;
+    float nx = 0.0f, ny = 0.0f;
+    int v = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTX);
+    if (abs(v) > dz) nx = (float)(v > 0 ? v - dz : v + dz) / (32767 - dz);
+    v = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTY);
+    if (abs(v) > dz) ny = (float)(v > 0 ? v - dz : v + dz) / (32767 - dz);
+    const float k = 8.0f;   /* max px per frame at full deflection (~30fps) */
+    rem_x += nx * k;
+    rem_y += ny * k;
+    int dx = (int)rem_x; rem_x -= dx;
+    int dy = (int)rem_y; rem_y -= dy;
+    if (dx || dy) pad_move(dx, dy);
+}
+
 static void pump_sdl_input(JNIEnv* env, jclass cls) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
@@ -318,24 +329,6 @@ static void pump_sdl_input(JNIEnv* env, jclass cls) {
         case SDL_CONTROLLERBUTTONUP:
             handle_btn(env, cls, ev.cbutton.button, 0);
             break;
-        case SDL_CONTROLLERAXISMOTION: {
-            const int v = ev.caxis.value;
-            const int dz = 4000;
-            if (abs(v) <= dz) break;
-            /* in gyro mode the left stick feeds the accelerometer, not the cursor */
-            if (g_gyro_mode &&
-                (ev.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX ||
-                 ev.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY))
-                break;
-            int sp = (abs(v) - dz) * 10 / (32767 - dz);
-            if (sp < 1) sp = 1;
-            if (v < 0) sp = -sp;
-            if (ev.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX)
-                pad_move(sp, 0);
-            else if (ev.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY)
-                pad_move(0, sp);
-            break;
-        }
         case SDL_KEYDOWN:
             if (ev.key.repeat) break;
             switch (ev.key.keysym.sym) {
@@ -409,8 +402,9 @@ static int sdl_video_init(void) {
 }
 
 static void sdl_swap(void) {
+    if (overlay_enabled())
+        overlay_draw(g_pad_x, g_pad_y);
     SDL_GL_SwapWindow(g_win);
-    draw_cursor_on_fb();
 }
 
 int main(int argc, char** argv) {
@@ -494,6 +488,10 @@ int main(int argc, char** argv) {
     if (sdl_video_init() != 0)
         return 1;
 
+    if (overlay_enabled() && !overlay_init(g_width, g_height)) {
+        fprintf(stderr, "[host] overlay init failed, cursor disabled\n");
+    }
+
     printf("[host] initialize(%d, %d)\n", g_width, g_height);
     p_initialize(env, cls, g_width, g_height);
     printf("[host] resize(%d, %d)\n", g_width, g_height);
@@ -513,6 +511,7 @@ int main(int argc, char** argv) {
         long t0 = now_ms();
         pump_touch(env, cls);
         pump_sdl_input(env, cls);
+        pump_stick_cursor();
         pump_gyro(env, cls);
         p_renderstep(env, cls, t0);
         sdl_swap();

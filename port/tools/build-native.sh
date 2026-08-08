@@ -32,8 +32,8 @@ echo "== building fmod stubs =="
 "$CXX" $CFLAGS -shared -fPIC -o "$OUT/libfmodevent.so" "$P/fmodex-stub/fmodevent_stub.cpp"
 
 echo "== building host (SDL2) =="
-"$CC" $CFLAGS -rdynamic -o "$OUT/gof2hd" "$P/host/gof2hd.c" "$P/host/jni.c" \
-    -L/usr/lib32 -lSDL2main -lSDL2 -ldl -lgcc_s -lm
+"$CC" $CFLAGS -rdynamic -o "$OUT/gof2hd" "$P/host/gof2hd.c" "$P/host/jni.c" "$P/host/wrap_overlay.c" \
+    "$OUT/libGLESv2.so" -L/usr/lib32 -lSDL2main -lSDL2 -ldl -lgcc_s -lm
 
 echo "== adding game engine =="
 [ -f /root/gof2hd/libgof2hdaa.so ] && \
