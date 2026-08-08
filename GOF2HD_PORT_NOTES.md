@@ -277,8 +277,24 @@ attr=36, mutexattr=4, condattr=4, sem_t=16, key_t=4, once_t=4.
 - SSH из этой среды: `export SSH_ASKPASS=/tmp/opencode/askpass.sh
   SSH_ASKPASS_REQUIRE=force DISPLAY=dummy:0`.
 - git push невозможен из среды (SSH с ключом отклоняется) — пушит пользователь.
-- gdbserver: `gdbserver 0.0.0.0:2345 ./gof2hd ...`; клиент —
-  `arm-buildroot-linux-gnueabi-gdb` + `target remote <dev-ip>:2345`.
+- gdbserver (armhf): ставится apt'ом прямо на устройстве —
+  `apt-get install -y gdbserver` (Ubuntu 22.04 armhf). Запуск с нужным env:
+  ```sh
+  cd /root/gof2hd/port/run-native
+  setsid bash -c 'export GOF_FB=/dev/fb0 GOF_SHOW_CURSOR=1 SDL_AUDIODRIVER=dummy \
+    LD_LIBRARY_PATH=.:/usr/lib32; \
+    exec gdbserver 127.0.0.1:2345 ./gof2hd base.apk main.*.obb data' \
+    >/root/gof2hd/gdblog.txt 2>&1 </dev/null &
+  ```
+  Туннель с ПК: `ssh -N -L 2345:127.0.0.1:2345 root@192.168.0.128`.
+  Клиент (ПК, gdb-multiarch — уже стоял на Manjaro):
+  `gdb-multiarch -batch -ex 'set solib-search-path <копия run-native>' -ex
+  'target remote 127.0.0.1:2345' -ex 'continue' -ex 'bt' ./gof2hd`.
+  **Важно:** под gdbserver движок на старте ловит SIGILL в ld.so и
+  зависает — интерактивная трассировка основной игры пока не работает;
+  для постмотра crash-переписей используем краш-хендлер + /proc/self/maps.
+  core_pattern на устройстве перезаписать нельзя (readonly) — путь к
+  coredump «core» идёт в CWD процесса.
 - Энва-флаги отладки: `GOF_TRACE` (GL-трейс),
 
   `GOF_GDB`, `GOF_VERBOSE_JNI`, `GOF_SHOW_CURSOR` (курсор-прицел,
@@ -293,7 +309,107 @@ attr=36, mutexattr=4, condattr=4, sem_t=16, key_t=4, once_t=4.
 | libc shim | `shim/shim.c`, `abi.c`, `sscanf.c`, `stdio.c` | трансляция `@LIBC`-набора (FILE/stat/pthread), спецсимволы |
 | libm shim | `shim/libm.c`, `libm.map` | float-math `@LIBC` (softfp→hardfp) |
 | GLES bridge | `gles-stub/gles-bridge.c` | softfp→hardfp GLES2 в libmali (EGL движок не использует) |
-| fmod stubs | `fmodex-stub/` | Заглушки аудио FMOD |
+| fmod stubs | `fmodex-stub/` | Заглушки аудио FMOD — ВСЕ геттеры возвращают NULL (fake-объекты запрещены, см. §11) |
 | Патч версий | `tools/patch-versions.py` | зануляет VERSYM у не-shim импортов движка |
 | Сборка | `tools/build-native.sh` | всё на устройстве |
 | Запуск | `tools/start-game.sh` | одна команда |
+
+## 11. FMOD-аудио: хроника крашей и планируемый фикс диалогов (2026-08-08)
+
+### 11.1. Памятка по структуре FModSound (из Ghidra/дизассемблера)
+
+`FModSound` (vtable сброшен):
+```
+this+0x18   + id*4   — слоты событий: sids 0..0x8F4 (Event*)
+this+0x23F0 ..+0x23F8  — слоты «SFX» (3 шт, индексы 0..2, стоп-цикл ходит по 1..2)
+this+0x23FC           — указатель EventSystem (нулевой = звук отключён)
+this+0x2404           — bool «звук включён» (guard у play/isPlaying/progress)
+this+0x2410 ..+0x2424 — список «играющей музыки» (5 int, -1=пусто)
+this+0x2434/0x2438    — копии позиций (Vector*) для 3D-событий
+this+0x11             — bool «играет музыка вообще» (собирается из слотов)
+```
+Ключевые методы (смещения в `libgof2hdaa.so`, Thumb):
+- `play(sid, ...)` @0x92F3FC — при 0x2404!=0 и sid<0x8F5 кладёт `Event*` в
+  слот `this+0x18+sid*4` (из `getEventBySystemID`) и зовёт setPitch/getCategory;
+- `isPlaying(sid)` @0x931E4 — слот пуст → false, иначе `Event::getState` → bit3;
+- `isChannelActive(sid)` @0x93228 — getState → bit4;
+- `stopAllSoundFXEvents()` @0x92DAC — цикл по слотам 1,2 (0x23F0), зовёт
+  `(**slot+0x1C)()` (= vtable[7], вирт. `stop()`);
+- `getPlayingProgress(sid)` @0x93988 / `getEventPauseLength` @0x93A14 — через
+  `Event::getInfo`/`getProperty` (у нас no-op).
+
+### 11.2. Краш №1 — детерминированный (был до правок)
+
+- Симптом: SIGSEGV на заходе на станцию, `pc=0xf6184dc6` (база 0xf60f2000 →
+  offset **0x92DC6**), `fault (nil)`: `ldr r1,[r0]` при r0=NULL — слот 0x23F0
+  (1..2) содержал NULL.
+- Цепочка: стабы `getEventBySystemID` возвращали `*e=NULL, FMOD_OK` → `play()`
+  **без проверки кладёт NULL в слот** → при первой же остановке SFX
+  (заход на станцию, грузится 3× `stations.bin`) цикл разыменовывает NULL.
+- Подтверждено Ghidra-декомпиляцией (обоих путей) до мелочей.
+
+### 11.3. Неудачный фикс: фейковые объекты (порождал новый краш)
+
+Попытка: стабы вернули «валидные» fake-объекты с vtable из 16 no-op —
+краш №1 исчез, но появился **краш №2**: `pc`/`lr` оказались ВНУТРИ таблицы
+строк движка (offset 0x193D7/0x193EA, участок `.rodata` со строками
+`_ZN20FileInterfaceAndroid15...`), `r4=0x8f` (sid 143, звуки станции),
+fault-адрес = r0+0x11. Причина: `play()` с не-NULL объектом заходит
+в ветку `if (Event::getCategory(...) == OK)`, а та делает vtable-вызов по
+`local_40` (мусор) → косвенный переход в .rodata, выполнение строк → крах.
+
+**Урок (записан в код):** возвращать движку «живые» FMOD-объекты нельзя —
+виртуальные вызовы должны стыковаться с реальной раскладкой FMOD-заголовков,
+которой у нас нет. Стабы обязаны отдавать **NULL** для всех out-объектов.
+
+### 11.4. Итоговый фикс (в коде + в сборке)
+
+1. `fmodevent_stub.cpp` — все геттеры: `*out = NULL`, `FMOD_OK`; только
+   `FMOD_EventSystem_Create` возвращает псевдо-NULL (`(FMOD_SYSTEM*)1`).
+   Убраны fake-объекты.
+2. Движок, `FModSound::stopAllSoundFXEvents` @0x92DAC **заменён на no-op**
+   (`movs r0,#0; bx lr` — байты `00 20 70 47`). Это единственное место,
+   где NULL-слот разыменовывался. Патч **вшит в `tools/build-native.sh`**
+   (после patch-versions) с проверкой ожидаемых байт (`b0 b5 02 af`) —
+   при несовпадении сборка падает, а не портит бинарник.
+3. Пересобрано, воспроизведение на станции — **упадков не было**,
+   игра стабильна 20+ минут. Диалоги мгновенно проскакивают (см. 11.5).
+
+### 11.5. Открытая задача — диалоги «проскакивают»
+
+- Механизм: движок держит реплику, пока у реплики «играет звук»:
+  `AESoundRessource::isPlaying(sid)` → `FModSound::isPlaying(sid)` →
+  слота == NULL (а мы ставим NULL!) → `getState` недостижим → `isPlaying()`
+  сразу `false` → следующая реплика.
+- Запланированный план (стабы, движок не трогаем):
+  1. `getEventBySystemID` → НЕ-NULL fake `Event` (слот не пуст) + `FMOD_OK`;
+  2. `Event::getCategory` → код ОШИБКИ (≠0) → `play()` уходит в else-ветку,
+     где слот ещё NULL → опасный vtable-вызов (краш №2) НЕ выполняется;
+  3. `Event::getState(unsigned*)` — счётчик опросов, отдавать `8` (bit3 =
+     PLAYING) первые ~180 опросов после `getEventBySystemID` (~3 с @60fps),
+     затем 0 — реплика «додержится»;
+  4. `Event::stop/start` сбрасывают таймер (клик «вперёд» не даёт висеть).
+- Точный тест — станция + диалоги; окно времени крутить константой в стабе
+  (не в движке!), потому что в стабе нет надёжного `gettimeofday` (shim-libc
+  не экспортит) — счётчик опросов не требует новых импортов и версионезависим.
+
+### 11.6. Инструменты отладки, которые реально пригодились
+
+- Краш-хендлер хоста (`crash_handler` + `dump_module_maps`) пишет в stderr
+  рега+карты — этого хватило для определения всех крашей без GDB.
+- Ghidra 12.1.2 (ПК): `support/analyzeHeadless /tmp/opencode/ghidra_crashproj
+  -import libgof2hdaa.so -scriptPath ... DecompileFMod.java` →
+  полный декомпил всех 40+ методов FModSound в один txt; в том числе
+  перепроверка оффсетов крашей и раскладки слотов.
+- Дизасм Thumb-областей движка: `llvm-objdump -d --triple=thumbv7-linux-gnueabihf`;
+  нужные куски вырезать `dd` + `llvm-objcopy -I binary --rename-section` в .text.
+- `md5sum` сверка бинарников ПК↔устройство перед анализом (и патчем).
+
+## 12. TODO / открытое
+
+- [ ] Реализовать план 11.5 (задержка реплик ~3 с) и протестировать на станции.
+- [ ] Живой backtrace новой палицы: SIGILL блокирует gdbserver-сессию
+      (программа зависает на ld.so при запуске под ptrace); кандидаты —
+      core-dump через core_pattern (на устройстве readonly), либо разбор
+      самого SIGILL-места в ld.so при трассировке.
+- [ ] Диалоги: проверить клик-вперёд (A/B) при задержке реплики.
