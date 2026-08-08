@@ -122,15 +122,15 @@ static long now_ms(void) {
     return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-/* ---- cursor (virtual finger) position, drawn by wrap_overlay ---- */
-static int g_pad_x = 320, g_pad_y = 240;   /* virtual finger (defined in pad section) */
-static int g_pad_down = 0;
-static int g_fire_down = 0;                /* X button -> touch in the fire zone */
+/* ---- D-pad hold flags (backend for the wrapper input vector) ----
+ * The on-screen cursor / accelerometer state itself lives in wrap_overlay
+ * (WrawState); gof2hd.c only feeds it: normalized stick + D-pad flags. */
+static int g_dpad[4];              /* up / down / left / right hold flags */
+static int g_prev_a, g_prev_x, g_prev_b;  /* engine touch/back edges */
 
 /* ---- gamepad: SDL2 joystick subsystem sees our uinput device ---- */
 static SDL_Window* g_win = NULL;
 static SDL_GameController* g_pad = NULL;
-static int g_gyro_mode = 0;   /* left stick -> accelerometer (START toggles) */
 
 static float gyro_axis(int v) {
     const int dz = 4000;
@@ -140,20 +140,13 @@ static float gyro_axis(int v) {
     return n;
 }
 
-static void pad_move(int dx, int dy) {
-    g_pad_x += dx; g_pad_y += dy;
-    if (g_pad_x < 0) g_pad_x = 0;
-    if (g_pad_y < 0) g_pad_y = 0;
-    if (g_pad_x >= g_width) g_pad_x = g_width - 1;
-    if (g_pad_y >= g_height) g_pad_y = g_height - 1;
-}
-
 /* ---- built-in ANBERNIC gamepad ----
  * Empirical mapping from a live capture on the device:
  *   A=b0, B=b3, X=b2, Y=b1, D-pad=hat0, left stick=a0/a1, right stick=a2/a3.
- * Left stick moves the on-screen cursor with speed proportional to
- * deflection (deadzone ~4000); D-pad steps the cursor by 10px; A is a
- * tap at the cursor, B is BackButtonPressed. */
+ * The D-pad duplicates the left stick (consoles without analog sticks):
+ * both feed the same normalized input vector in wrap_overlay — in cursor
+ * mode it moves the on-screen cursor, in gyro mode it drives the
+ * accelerometer.  START toggles the mode. */
 static void add_dev_mapping(void) {
     int n = SDL_NumJoysticks();
     for (int i = 0; i < n; i++) {
@@ -196,50 +189,28 @@ static SDL_GameController* find_pad(void) {
     return NULL;
 }
 
-static void handle_btn(JNIEnv* env, jclass cls, int ctrl_btn, int down) {
+static void handle_btn(int ctrl_btn, int down) {
     switch (ctrl_btn) {
-    case SDL_CONTROLLER_BUTTON_DPAD_UP:    if (down) pad_move(0, -10); break;
-    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  if (down) pad_move(0, +10); break;
-    case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  if (down) pad_move(-10, 0); break;
-    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: if (down) pad_move(+10, 0); break;
+    case SDL_CONTROLLER_BUTTON_DPAD_UP:    g_dpad[0] = down; break;
+    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  g_dpad[1] = down; break;
+    case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  g_dpad[2] = down; break;
+    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: g_dpad[3] = down; break;
     case SDL_CONTROLLER_BUTTON_A:
-        if (down && !g_pad_down) {
-            g_pad_down = 1;
-            p_handleTouchEvent(env, cls, 722, 0, g_pad_x, g_pad_y);
-            fprintf(stderr, "[pad] touch down %d,%d\n", g_pad_x, g_pad_y);
-        } else if (!down && g_pad_down) {
-            g_pad_down = 0;
-            p_handleTouchEvent(env, cls, 722, 1, g_pad_x, g_pad_y);
-            fprintf(stderr, "[pad] touch up %d,%d\n", g_pad_x, g_pad_y);
-        }
+        overlay_input_button(WRAW_BTN_A, down);
         break;
     case SDL_CONTROLLER_BUTTON_B:
-        if (down && p_backbutton_fn) {
-            fprintf(stderr, "[pad] back\n");
-            p_backbutton_fn(env, cls);
-        }
+        overlay_input_button(WRAW_BTN_B, down);
         break;
     case SDL_CONTROLLER_BUTTON_X:
-        /* Fire: engine reads Hud::firePressed() (bit 4 of Hud+0x284), which is
-         * set by a touch landing in the fire zone (right/bottom of the screen).
-         * Touch pid 723 (cursor uses 722) so the two fingers don't collide. */
-        if (down && !g_fire_down) {
-            g_fire_down = 1;
-            p_handleTouchEvent(env, cls, 723, 0, g_width - g_width / 8, g_height - g_height / 8);
-            fprintf(stderr, "[pad] fire down\n");
-        } else if (!down && g_fire_down) {
-            g_fire_down = 0;
-            p_handleTouchEvent(env, cls, 723, 1, g_width - g_width / 8, g_height - g_height / 8);
-            fprintf(stderr, "[pad] fire up\n");
-        }
+        /* Fire: engine reads Hud::firePressed() (bit 4 of Hud+0x284), which
+         * is set by a touch landing in the fire zone (right/bottom of the
+         * screen).  Touch pid 723 (cursor uses 722) so the two fingers
+         * don't collide. */
+        overlay_input_button(WRAW_BTN_X, down);
         break;
     case SDL_CONTROLLER_BUTTON_START:
     case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
-        if (down) {
-            g_gyro_mode = !g_gyro_mode;
-            fprintf(stderr, "[pad] gyro mode %s (left stick -> accelerometer)\n",
-                    g_gyro_mode ? "ON" : "OFF");
-        }
+        overlay_input_button(WRAW_BTN_START, down);
         break;
     }
 }
@@ -273,77 +244,97 @@ static void pump_touch(JNIEnv* env, jclass cls) {
     }
 }
 
-static void pump_gyro(JNIEnv* env, jclass cls) {
-    if (!g_pad || !p_handleAccelerometer) return;
-    float ax, ay, az;
-    if (g_gyro_mode) {
-        float nx = gyro_axis(SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTX));
-        float ny = gyro_axis(SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTY));
-        /*
-         * JNI stub: SetAccelValue(-a, b, c) == engine (X, Y, Z).
-         *   steer uses accel[1] (Y) = b -> stick X  (works)
-         *   pitch uses accel[2] (Z) = c, driven from stick Y.
-         * Engine expects Z ~ +1.0 when the device is held level (Android
-         * sends z/10 ~ 0.98), so neutral is Z = 1.0, not 0 (Z=0 reads as a
-         * forward tilt and makes the ship dive).
-         */
-        ax = 0.0f;
-        ay = -nx;
-        az = 1.0f + ny;
-    } else {
-        ax = ay = 0.0f;
-        az = 1.0f;
+/* Feed the wrapper the combined input vector once per frame: normalized
+ * left stick (deadzone ~4000) + D-pad hold flags (D-pad doubles as a
+ * second stick — useful on consoles without analog sticks). */
+static void pump_input_vector(void) {
+    float nx = 0.0f, ny = 0.0f;
+    if (g_pad) {
+        nx = gyro_axis(SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTX));
+        ny = gyro_axis(SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTY));
     }
-    p_handleAccelerometer(env, cls, ax, ay, az);
+    /* D-pad signs follow the stick convention: up/left = -1 (matching
+     * how the stick polarity was verified on the device). */
+    if (g_dpad[0]) ny = -1.0f;
+    if (g_dpad[1]) ny =  1.0f;
+    if (g_dpad[2]) nx = -1.0f;
+    if (g_dpad[3]) nx =  1.0f;
+    overlay_input_vector(nx, ny);
 }
 
-/* Cursor from the left stick, polled every frame so holding the stick
- * deflected keeps the cursor moving (axis-motion events stop when the
- * value stops changing).  Speed is proportional to deflection, with a
- * fractional accumulator for smooth slow movement. */
-static void pump_stick_cursor(void) {
-    if (!g_pad) return;
-    if (g_gyro_mode) return;   /* in gyro mode the stick feeds the accelerometer */
-    static float rem_x = 0.0f, rem_y = 0.0f;
-    const int dz = 4000;
-    float nx = 0.0f, ny = 0.0f;
-    int v = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTX);
-    if (abs(v) > dz) nx = (float)(v > 0 ? v - dz : v + dz) / (32767 - dz);
-    v = SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTY);
-    if (abs(v) > dz) ny = (float)(v > 0 ? v - dz : v + dz) / (32767 - dz);
-    const float k = 8.0f;   /* max px per frame at full deflection (~30fps) */
-    rem_x += nx * k;
-    rem_y += ny * k;
-    int dx = (int)rem_x; rem_x -= dx;
-    int dy = (int)rem_y; rem_y -= dy;
-    if (dx || dy) pad_move(dx, dy);
+/* Drive the engine from the wrapper state: accelerometer each frame, and
+ * touch/back on button edges (the wrapper only stores held states). */
+static void pump_engine_input(JNIEnv* env, jclass cls) {
+    if (p_handleAccelerometer) {
+        float ax, ay, az;
+        overlay_get_gyro(&ax, &ay, &az);
+        p_handleAccelerometer(env, cls, ax, ay, az);
+    }
+
+    int cx, cy;
+    overlay_get_cursor(&cx, &cy);
+    int a = overlay_get_btn(WRAW_BTN_A);
+    if (a && !g_prev_a) {
+        p_handleTouchEvent(env, cls, 722, 0, cx, cy);
+        fprintf(stderr, "[pad] touch down %d,%d\n", cx, cy);
+    } else if (!a && g_prev_a) {
+        p_handleTouchEvent(env, cls, 722, 1, cx, cy);
+        fprintf(stderr, "[pad] touch up %d,%d\n", cx, cy);
+    }
+    g_prev_a = a;
+
+    int x = overlay_get_btn(WRAW_BTN_X);
+    if (x && !g_prev_x) {
+        p_handleTouchEvent(env, cls, 723, 0, g_width - g_width / 8, g_height - g_height / 8);
+        fprintf(stderr, "[pad] fire down\n");
+    } else if (!x && g_prev_x) {
+        p_handleTouchEvent(env, cls, 723, 1, g_width - g_width / 8, g_height - g_height / 8);
+        fprintf(stderr, "[pad] fire up\n");
+    }
+    g_prev_x = x;
+
+    int b = overlay_get_btn(WRAW_BTN_B);
+    if (b && !g_prev_b) {
+        fprintf(stderr, "[pad] back\n");
+        if (p_backbutton_fn) p_backbutton_fn(env, cls);
+    }
+    g_prev_b = b;
 }
 
 static void pump_sdl_input(JNIEnv* env, jclass cls) {
+    (void)env; (void)cls;
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
         switch (ev.type) {
         case SDL_CONTROLLERBUTTONDOWN:
-            handle_btn(env, cls, ev.cbutton.button, 1);
+            handle_btn(ev.cbutton.button, 1);
             break;
         case SDL_CONTROLLERBUTTONUP:
-            handle_btn(env, cls, ev.cbutton.button, 0);
+            handle_btn(ev.cbutton.button, 0);
             break;
         case SDL_KEYDOWN:
             if (ev.key.repeat) break;
             switch (ev.key.keysym.sym) {
-            case SDLK_UP:    pad_move(0, -10); break;
-            case SDLK_DOWN:  pad_move(0, +10); break;
-            case SDLK_LEFT:  pad_move(-10, 0); break;
-            case SDLK_RIGHT: pad_move(+10, 0); break;
+            case SDLK_UP:    g_dpad[0] = 1; break;
+            case SDLK_DOWN:  g_dpad[1] = 1; break;
+            case SDLK_LEFT:  g_dpad[2] = 1; break;
+            case SDLK_RIGHT: g_dpad[3] = 1; break;
             case SDLK_RETURN: case SDLK_SPACE:
-                p_handleTouchEvent(env, cls, 722, 0, g_pad_x, g_pad_y);
-                p_handleTouchEvent(env, cls, 722, 1, g_pad_x, g_pad_y);
-                fprintf(stderr, "[pad] key tap %d,%d\n", g_pad_x, g_pad_y);
+                overlay_input_button(WRAW_BTN_A, 1);
+                overlay_input_button(WRAW_BTN_A, 0);
                 break;
             case SDLK_BACKSPACE: case SDLK_ESCAPE:
-                if (p_backbutton_fn) { fprintf(stderr, "[pad] back\n"); p_backbutton_fn(env, cls); }
+                overlay_input_button(WRAW_BTN_B, 1);
+                overlay_input_button(WRAW_BTN_B, 0);
                 break;
+            }
+            break;
+        case SDL_KEYUP:
+            switch (ev.key.keysym.sym) {
+            case SDLK_UP:    g_dpad[0] = 0; break;
+            case SDLK_DOWN:  g_dpad[1] = 0; break;
+            case SDLK_LEFT:  g_dpad[2] = 0; break;
+            case SDLK_RIGHT: g_dpad[3] = 0; break;
             }
             break;
         }
@@ -403,7 +394,7 @@ static int sdl_video_init(void) {
 
 static void sdl_swap(void) {
     if (overlay_enabled())
-        overlay_draw(g_pad_x, g_pad_y);
+        overlay_draw();
     SDL_GL_SwapWindow(g_win);
 }
 
@@ -417,7 +408,6 @@ int main(int argc, char** argv) {
     const char* obb_path = argv[2];
     const char* data_dir = argv[3];
     if (getenv("GOF_VERBOSE_JNI")) g_jni_verbose = 1;
-    if (getenv("GOF_GYRO")) g_gyro_mode = 1;
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
     if (!getenv("GOF_GDB")) install_crash_handler();
@@ -478,6 +468,7 @@ int main(int argc, char** argv) {
     p_setEnvironmentVariables(env, cls, (jobject)&fake_context);
     printf("[host] setCountryCodeOfDevice(0)\n");
     p_setCountryCodeOfDevice(env, cls, 0);
+    if (getenv("GOF_GYRO")) overlay_set_mode(WRAW_MODE_GYRO);
     if (p_setOrigamiSuperClub) {
         static char origami[] = "0123456789ABCDEF0123456789ABCDEF";
         printf("[host] setOrigamiSuperClub(...)\n");
@@ -511,8 +502,8 @@ int main(int argc, char** argv) {
         long t0 = now_ms();
         pump_touch(env, cls);
         pump_sdl_input(env, cls);
-        pump_stick_cursor();
-        pump_gyro(env, cls);
+        pump_input_vector();
+        pump_engine_input(env, cls);
         p_renderstep(env, cls, t0);
         sdl_swap();
         frames++;

@@ -35,16 +35,18 @@
     leftx:a0,lefty:a1,rightx:a2,righty:a3"`
 - Hat-значения крестовины (прошивка): UP=1, RIGHT=2, DOWN=4, LEFT=8
   (сдвиг от SDL-стандарта 0/1/2/3 — уже учтено в маппинге).
-- Логика: левый стик → курсор (скорость ∝ отклонению, deadzone 4000,
-  `SDL_CONTROLLER_AXIS_LEFTX/LEFTY`; стик опрашивается каждый кадр
-  (`pump_stick_cursor`), поэтому удерживаемый в отклонении стик
-  продолжает двигать курсор — события axis-motion при этом не приходят),
-  крестовина → шаг 10 px,
-  A (`b0`) → touch down/up (pid 722), B (`b3`) → BackButtonPressed.
-- **Гироскоп-режим** (`g_gyro_mode`, тумблер START = `leftshoulder`/idx=9):
-  левый стик эмулирует акселерометр → `Java_..._ToJNI_handleAccelerometer`.
-  Включается кнопкой (START) или env `GOF_GYRO=1`. В режиме гироскопа стик
-  перестаёт двигать курсор (его забирает акселерометр), курсор — только крестовина.
+- Логика: стик и крестовина складываются в единый нормализованный вектор
+  в `pump_input_vector()` (`gof2hd.c` — бэкенд: deadzone 4000, ±1 от
+  крестовины; крестовина дублирует стик — консоли без аналоговых стиков),
+  вектор кормит `WrawState` в `wrap_overlay.c`. В режиме курсора вектор
+  двигает курсор (скорость ∝ отклонению, `overlay_input_vector`),
+  A (`b0`) → touch down/up (pid 722), B (`b3`) → BackButtonPressed, X —
+  fire (pid 723).
+- **Гироскоп-режим** (`WrawState.mode`, тумблер START или env `GOF_GYRO=1`):
+  вектор стика+крестовины эмулирует акселерометр
+  → `Java_..._ToJNI_handleAccelerometer`. В режиме гироскопа курсор
+  не двигается (вектор весь уходит акселерометру), геттер
+  `overlay_get_gyro()` отдаёт итоговый маппинг.
 - Лог: `[pad] mapped/opened ANBERNIC-keys (idx 0)`, `[pad] gamepad ready`,
   `[pad] gyro mode ON/OFF`.
 
@@ -63,7 +65,8 @@
 мусор из r0–r3 и корабль не реагирует вообще. JNI-стаб `handleAccelerometer`
 дополнительно инвертирует первый float: движок видит `SetAccelValue(-a, b, c)`.
 
-**Итоговый маппинг** в `pump_gyro()` (`host/gof2hd.c`), вызывается каждый кадр:
+**Итоговый маппинг** в `overlay_get_gyro()` (`wrap_overlay.c`), вызывается
+каждый кадр из `pump_engine_input()`:
 ```
 ax = 0.0f;      // engine X не используется для руля/питча
 ay = -nx;       // engine Y (руль) = -стик X  (стик вправо -> корабль вправо)
@@ -100,13 +103,14 @@ CURRENT_PROGRAM / ARRAY_BUFFER_BINDING / VIEWPORT), после — восста�
 и упадёт `undefined reference to dlerror@@GLIBC_2.34`. Линковать именно
 абсолютным путём `"$OUT/libGLESv2.so"` (DT_NEEDED с полным путём).
 
-**Движение курсора стиком (polling).** `SDL_CONTROLLERAXISMOTION` приходит
+**Движение курсора (polling).** `SDL_CONTROLLERAXISMOTION` приходит
 только пока значение оси меняется: удерживаемый в отклонении стик —
-и курсор стоял. Исправлено: `pump_stick_cursor()` в `gof2hd.c` опрашивает
-левый стик каждый кадр (`SDL_GameControllerGetAxis`), как уже делал
-`pump_gyro`, скорость ∝ отклонению (deadzone 4000, макс 8 px/кадр ≈ 240 px/с),
-дробный аккумулятор для плавного медленного хода. В gyro-режиме стик
-по-прежнему уходит акселерометру.
+и курсор стоял. Исправлено: `gof2hd.c` опрашивает левый стик каждый
+кадр и складывает с флагами крестовины в единый вектор (`pump_input_vector`),
+который передаёт в `overlay_input_vector()` (`wrap_overlay.c`); там —
+скорость ∝ отклонению (deadzone 4000, макс 8 px/кадр ≈ 240 px/с),
+дробный аккумулятор для плавного медленного хода (`WrawState.rem`).
+В gyro-режиме вектор уходит акселерометру, курсор не двигается.
 
 ## 4. Сборка и запуск — 3 команды
 
@@ -283,8 +287,8 @@ attr=36, mutexattr=4, condattr=4, sem_t=16, key_t=4, once_t=4.
 
 | Компонент | Файл | Роль |
 |---|---|---|
-| host | `host/gof2hd.c` | SDL2-окно/EGL + геймпад-ввод + движение Java-обёртки |
-| GL-оверлей | `port/host/wrap_overlay.c/.h` | курсор-прицел в GL-кадре перед свапом; линкуется с `libGLESv2.so` (`pcs("aapcs")`-прототипы) |
+| host | `host/gof2hd.c` | SDL2-окно/EGL + геймпад-ввод (бэкенд: deadzone, стик+крестовина → вектор) + движение Java-обёртки |
+| GL-оверлей + состояние ввода | `port/host/wrap_overlay.c/.h` | `WrawState` (режим курсор/гиро, курсор, кнопки, вектор ввода) + курсор-прицел в GL-кадре перед свапом; линкуется с `libGLESv2.so` (`pcs("aapcs")`-прототипы) |
 | JNI-эмуляция | `host/jni.c`, `jni.h` | Фейковые JavaVM/Jobject/jstring |
 | libc shim | `shim/shim.c`, `abi.c`, `sscanf.c`, `stdio.c` | трансляция `@LIBC`-набора (FILE/stat/pthread), спецсимволы |
 | libm shim | `shim/libm.c`, `libm.map` | float-math `@LIBC` (softfp→hardfp) |
