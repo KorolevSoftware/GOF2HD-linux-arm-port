@@ -8,7 +8,7 @@ P="$(cd "$(dirname "$0")/.." && pwd)"
 
 CC="${CC:-arm-linux-gnueabihf-gcc}"
 CXX="${CXX:-arm-linux-gnueabihf-g++}"
-CFLAGS="${CFLAGS:--O2 -fno-stack-protector -fno-builtin}"
+CFLAGS="${CFLAGS:--O2 -g -fno-stack-protector -fno-builtin}"
 OUT="$P/run-native"
 
 rm -rf "$OUT"
