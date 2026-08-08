@@ -12,7 +12,7 @@
  * libGLESv2.so shim -> libmali, so frames render into the same SDL/EGL
  * context on the device framebuffer.
  *
- * Usage: gof2hd <apk> <obb> <dataDir> [width] [height]
+ * Usage: gof2hd <apk> <obb> <dataDir>
  */
 #define _GNU_SOURCE
 #include "jni.h"
@@ -372,11 +372,15 @@ static int sdl_video_init(void) {
     SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
-    g_win = SDL_CreateWindow("GOF2HD", 0, 0, g_width, g_height, SDL_WINDOW_OPENGL);
+    g_win = SDL_CreateWindow("GOF2HD", 0, 0, 0, 0,
+                             SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN_DESKTOP);
     if (!g_win) {
         fprintf(stderr, "[host] SDL_CreateWindow: %s\n", SDL_GetError());
         return -1;
     }
+    SDL_GetWindowSize(g_win, &g_width, &g_height);
+    g_display_width = g_width;
+    g_display_height = g_height;
     SDL_GLContext gl = SDL_GL_CreateContext(g_win);
     if (!gl) {
         fprintf(stderr, "[host] SDL_GL_CreateContext: %s\n", SDL_GetError());
@@ -384,8 +388,8 @@ static int sdl_video_init(void) {
     }
     SDL_GL_MakeCurrent(g_win, gl);
     SDL_GL_SetSwapInterval(0);
-    printf("[host] SDL window ready (video driver: %s)\n",
-           SDL_GetCurrentVideoDriver());
+    printf("[host] SDL window ready (video driver: %s, %dx%d fullscreen)\n",
+           SDL_GetCurrentVideoDriver(), g_width, g_height);
     int nj = SDL_NumJoysticks();
     fprintf(stderr, "[pad] %d joystick(s):\n", nj);
     for (int i = 0; i < nj; i++) {
@@ -412,16 +416,12 @@ static void sdl_swap(void) {
 int main(int argc, char** argv) {
     if (argc < 4) {
         fprintf(stderr,
-            "usage: %s <base.apk> <main.*.obb> <dataDir> [width] [height]\n", argv[0]);
+            "usage: %s <base.apk> <main.*.obb> <dataDir>\n", argv[0]);
         return 2;
     }
     const char* apk_path = argv[1];
     const char* obb_path = argv[2];
     const char* data_dir = argv[3];
-    if (argc >= 5) g_width = atoi(argv[4]);
-    if (argc >= 6) g_height = atoi(argv[5]);
-    g_display_width = g_width;
-    g_display_height = g_height;
     if (getenv("GOF_VERBOSE_JNI")) g_jni_verbose = 1;
     if (getenv("GOF_GYRO")) g_gyro_mode = 1;
     setbuf(stdout, NULL);

@@ -94,7 +94,7 @@ export SDL_VIDEODRIVER=mali SDL_AUDIODRIVER=dummy GOF_FB=/dev/fb0 GOF_SHOW_CURSO
 export LD_LIBRARY_PATH=/root/gof2hd/port/run-native:/usr/lib32
 ./gof2hd /root/gof2hd/base.apk \
     '/root/gof2hd/obb/net.fishlabs.gof2hdallandroid2012/main.47947006.net.fishlabs.gof2hdallandroid2012.obb' \
-    /root/gof2hd/data 640 480
+    /root/gof2hd/data
 ```
 
 ## 5. Как игра работает (механика запуска)
@@ -110,7 +110,8 @@ Android-приложение = Java-обёртка + нативный `libgof2hd
 5. `setEnvironmentVariables(context)`
 6. `setCountryCodeOfDevice(0)`
 7. `SetOrigamiSuperClub("...")` — иначе краш в SHA256 (NULL-указатель)
-8. `initialize(640,480)` → `resize(640,480)`
+8. `initialize(w,h)` → `resize(w,h)` — w/h = разрешение экрана,
+   полученное от SDL (полный экран, `SDL_GetWindowSize`)
 9. Цикл: `renderstep(now_ms())` каждые ~33 мс
 
 **Проверенные факты:**

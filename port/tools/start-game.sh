@@ -9,8 +9,6 @@ set -e
 GOF_ROOT="${GOF_ROOT:-/root/gof2hd}"
 RUN_DIR="$GOF_ROOT/port/run-native"
 LOG_FILE="${GOF_LOG:-$GOF_ROOT/run.txt}"
-WIDTH="${GOF_WIDTH:-640}"
-HEIGHT="${GOF_HEIGHT:-480}"
 
 APK="$GOF_ROOT/base.apk"
 OBB=$(ls "$GOF_ROOT"/obb/*/main.*.obb "$GOF_ROOT"/obb/main.*.obb 2>/dev/null | head -1)
@@ -47,7 +45,7 @@ export SDL_VIDEODRIVER=mali
 export SDL_AUDIODRIVER=dummy
 export LD_LIBRARY_PATH=.:/usr/lib32
 : > "$LOG_FILE"
-setsid ./gof2hd "$APK" "$OBB" "$DATA" "$WIDTH" "$HEIGHT" >"$LOG_FILE" 2>&1 </dev/null &
+setsid ./gof2hd "$APK" "$OBB" "$DATA" >"$LOG_FILE" 2>&1 </dev/null &
 
 sleep 3
 PID=$(pgrep -f '/root/gof2hd/base.apk' || true)
