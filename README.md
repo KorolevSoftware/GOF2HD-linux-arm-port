@@ -162,7 +162,6 @@ export GOF_SHOW_CURSOR=1
 | `GOF_FB` | Путь fbdev-устройства (по умолчанию `/dev/fb0`) |
 | `GOF_SHOW_CURSOR` | Рисовать курсор-прицел виртуального пальца поверх кадра |
 | `GOF_VERBOSE_JNI` | Логировать JNI-вызовы движка |
-| `GOF_AUTO_TOUCH` | Автотап в центр каждые 8 кадров |
 | `GOF_GDB` | Не устанавливать обработчик краша (под gdbserver) |
 | `GOF_TRACE` | Трассировать GLES-вызовы |
 | `GOF_EGL_REQUIRED` | Умереть, если SDL/EGL-контекст не создан |
