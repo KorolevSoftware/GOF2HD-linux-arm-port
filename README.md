@@ -69,7 +69,7 @@ bash /root/gof2hd/port/tools/start-game.sh
 `LD_LIBRARY_PATH=.:/usr/lib32`, `GOF_SHOW_CURSOR=1`.
 
 Настройки через окружение (см. таблицу переменных ниже):
-`GOF_ROOT`, `GOF_LOG`, `GOF_WIDTH`, `GOF_HEIGHT`. Лог — `<GOF_ROOT>/run.txt`
+`GOF_ROOT`, `GOF_LOG`. Лог — `<GOF_ROOT>/run.txt`
 (следить: `tail -f`).
 
 ### Запуск вручную
@@ -85,10 +85,12 @@ export LD_LIBRARY_PATH=/root/gof2hd/port/run-native:/usr/lib32
 
 ./gof2hd /root/gof2hd/base.apk \
     '/root/gof2hd/obb/net.fishlabs.gof2hdallandroid2012/main.47947006.net.fishlabs.gof2hdallandroid2012.obb' \
-    /root/gof2hd/data 640 480
+    /root/gof2hd/data
 ```
 
-Аргументы: `<base.apk> <main.*.obb> <dataDir> [width] [height]`.
+Аргументы: `<base.apk> <main.*.obb> <dataDir>`.
+Окно — полный экран; разрешение хост берёт из SDL
+(`SDL_CreateWindow` + `SDL_GetWindowSize`).
 
 > Перед запуском закройте фронтенд/лаунчер консоли (он держит `/dev/fb0`):
 > `start-game.sh` или `/etc/init.d/launcher.sh stop`, иначе fb0 конфликтует.
@@ -139,8 +141,7 @@ echo "$PID 0 320 240" > /tmp/gof2hd_touch && sleep 0.2 \
   && echo "$PID 1 320 240" >> /tmp/gof2hd_touch
 ```
 
-По умолчанию тап в центр экрана (~640×480) закрывает логотип и переводит
-в меню.
+По умолчанию тап в центр экрана закрывает логотип и переводит в меню.
 
 ### Курсор-прицел (GOF_SHOW_CURSOR)
 
@@ -165,7 +166,6 @@ export GOF_SHOW_CURSOR=1
 | `GOF_GDB` | Не устанавливать обработчик краша (под gdbserver) |
 | `GOF_TRACE` | Трассировать GLES-вызовы |
 | `GOF_LOG` | Путь лога (использует `start-game.sh`) |
-| `GOF_WIDTH`/`GOF_HEIGHT` | Разрешение (через `start-game.sh`) |
 | `GOF_ROOT` | Корень порта на устройстве (через `start-game.sh`) |
 | `SDL_VIDEODRIVER` | Видеодрайвер SDL2 (у нас — `mali`) |
 | `SDL_AUDIODRIVER` | Аудиодрайвер (для порта — `dummy`) |
