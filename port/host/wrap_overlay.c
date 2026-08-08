@@ -1,11 +1,18 @@
 /*
- * wrap_overlay.c — 2D GL overlay for the GOF2HD host (cursor reticle).
+ * wrap_overlay.c — 2D GL overlay + wrapper input state for the GOF2HD host.
  *
  * The old approach drew into raw fb0 memory after SwapWindow, so the
  * fbdev driver's frame presentation wiped it asynchronously and the
  * cursor flickered.  Instead we render the reticle through the same
  * GLES2 context, after the engine's renderstep and before SwapWindow,
  * so it is part of the presented frame.
+ *
+ * This module also owns the wrapper input state (WrawState): the input
+ * mode (cursor/gyro), the cursor (virtual finger) position, the held
+ * button states and the per-frame input vector.  gof2hd.c is the input
+ * backend — it applies deadzone/normalization, combines the stick and
+ * the D-pad (the D-pad duplicates the stick so consoles without analog
+ * sticks work too) and feeds the resulting [-1,1] vector here.
  *
  * The GL bridge libGLESv2.so exports pcs("aapcs") (softfp) entry points
  * while the host is hardfp (aapcs-vfp).  The host is linked against
@@ -59,7 +66,21 @@ GLF(glDisable,                void,   GLenum);
 GLF(glDepthMask,              void,   GLboolean);
 #undef GLF
 
-static int      g_w, g_h;
+/* ---- wrapper input state ----
+ * Single owner of the per-frame input data used by both the overlay
+ * renderer and the engine-driving code in gof2hd.c. */
+typedef struct WrawState {
+    int   mode;                 /* WRAW_MODE_CURSOR / WRAW_MODE_GYRO */
+    int   cx, cy;               /* cursor (virtual finger), clamped to w/h */
+    int   w, h;                 /* window size (set by overlay_init) */
+    int   btn[WRAW_BTN_COUNT];  /* held state (0/1) per WrawButton */
+    float vec[2];               /* ready input vector, normalized [-1,1] */
+    float rem[2];               /* fractional accumulator for smooth cursor */
+} WrawState;
+
+static WrawState g_wraw;
+
+/* ---- GL objects ---- */
 static GLuint   g_prog, g_vbo;
 static GLint    g_uproj, g_ucol, g_a_pos;
 static GLfloat  g_proj[16];
@@ -67,6 +88,78 @@ static GLfloat  g_proj[16];
 int overlay_enabled(void) {
     return getenv("GOF_SHOW_CURSOR") != NULL;
 }
+
+/* ---- input state ---- */
+
+void overlay_set_mode(WrawMode mode) {
+    g_wraw.mode = mode == WRAW_MODE_GYRO ? WRAW_MODE_GYRO : WRAW_MODE_CURSOR;
+}
+
+WrawMode overlay_get_mode(void) {
+    return (WrawMode)g_wraw.mode;
+}
+
+void overlay_get_cursor(int* x, int* y) {
+    *x = g_wraw.cx;
+    *y = g_wraw.cy;
+}
+
+int overlay_get_btn(WrawButton btn) {
+    if (btn < 0 || btn >= WRAW_BTN_COUNT) return 0;
+    return g_wraw.btn[btn];
+}
+
+void overlay_input_button(WrawButton btn, int down) {
+    if (btn < 0 || btn >= WRAW_BTN_COUNT) return;
+    if (btn == WRAW_BTN_START && down) {
+        overlay_set_mode((WrawMode)!g_wraw.mode);
+        fprintf(stderr, "[ove] gyro mode %s\n",
+                g_wraw.mode ? "ON (input vector -> accelerometer)" : "OFF");
+    }
+    g_wraw.btn[btn] = down ? 1 : 0;
+}
+
+void overlay_input_vector(float nx, float ny) {
+    if (nx > 1.0f) nx = 1.0f; else if (nx < -1.0f) nx = -1.0f;
+    if (ny > 1.0f) ny = 1.0f; else if (ny < -1.0f) ny = -1.0f;
+    g_wraw.vec[0] = nx;
+    g_wraw.vec[1] = ny;
+    if (g_wraw.mode != WRAW_MODE_CURSOR) return;  /* gyro: cursor stays put */
+    if (!g_wraw.w || !g_wraw.h) return;
+
+    /* speed proportional to deflection, fractional accumulator for a
+     * smooth crawl at small deflections (~8 px/frame at full stick) */
+    const float k = 8.0f;
+    g_wraw.rem[0] += nx * k;
+    g_wraw.rem[1] += ny * k;
+    int dx = (int)g_wraw.rem[0]; g_wraw.rem[0] -= dx;
+    int dy = (int)g_wraw.rem[1]; g_wraw.rem[1] -= dy;
+    if (!dx && !dy) return;
+
+    g_wraw.cx += dx;
+    g_wraw.cy += dy;
+    if (g_wraw.cx < 0) g_wraw.cx = 0;
+    if (g_wraw.cy < 0) g_wraw.cy = 0;
+    if (g_wraw.cx >= g_wraw.w) g_wraw.cx = g_wraw.w - 1;
+    if (g_wraw.cy >= g_wraw.h) g_wraw.cy = g_wraw.h - 1;
+}
+
+void overlay_get_gyro(float* ax, float* ay, float* az) {
+    if (g_wraw.mode == WRAW_MODE_GYRO) {
+        /* Engine: SetAccelValue(-a, b, c) == (X, Y, Z).
+         *   steer uses accel[1] (Y) = b -> -vector X
+         *   pitch uses accel[2] (Z) = c; neutral Z ~ +1.0 (Android sends
+         *   z/10 ~ 0.98 level), so 1.0, not 0 (0 reads as a dive). */
+        *ax = 0.0f;
+        *ay = -g_wraw.vec[0];
+        *az = 1.0f + g_wraw.vec[1];
+    } else {
+        *ax = *ay = 0.0f;
+        *az = 1.0f;
+    }
+}
+
+/* ---- shader + draw ---- */
 
 static const char VSH[] =
     "attribute vec2 aPos;\n"
@@ -91,8 +184,10 @@ static GLuint compile_shader(GLenum type, const char* src) {
 
 int overlay_init(int width, int height) {
     if (width <= 0 || height <= 0) return 0;
-    g_w = width;
-    g_h = height;
+    g_wraw.w = width;
+    g_wraw.h = height;
+    g_wraw.cx = width / 2;
+    g_wraw.cy = height / 2;
 
     GLuint vs = compile_shader(GL_VERTEX_SHADER, VSH);
     GLuint fs = compile_shader(GL_FRAGMENT_SHADER, FSH);
@@ -132,8 +227,10 @@ int overlay_init(int width, int height) {
     return 1;
 }
 
-void overlay_draw(int x, int y) {
-    if (!g_prog || !g_w || !g_h) return;
+void overlay_draw(void) {
+    if (!g_prog || !g_wraw.w || !g_wraw.h) return;
+    if (g_wraw.mode == WRAW_MODE_GYRO) return;  /* no reticle in gyro mode */
+    int x = g_wraw.cx, y = g_wraw.cy;
 
     /* two crossing bars, 3 px thick, half-length 12 px -> 6 segments */
     GLfloat verts[12 * 2];
@@ -156,7 +253,7 @@ void overlay_draw(int x, int y) {
     glDisable(GL_BLEND);
     glDisable(GL_SCISSOR_TEST);
     glDepthMask(0);
-    glViewport(0, 0, g_w, g_h);
+    glViewport(0, 0, g_wraw.w, g_wraw.h);
 
     glUseProgram(g_prog);
     glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
