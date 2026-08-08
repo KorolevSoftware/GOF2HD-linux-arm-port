@@ -31,6 +31,26 @@
 #include <errno.h>
 
 /* ---- crash handler ---- */
+/* Print the load addresses of our .so's so pc/lr offsets can be computed
+ * against the module base (ASLR changes the base each run). */
+static void dump_module_maps(void) {
+    FILE* f = fopen("/proc/self/maps", "r");
+    if (!f) return;
+    char line[512];
+    static char out[512];
+    while (fgets(line, sizeof(line), f)) {
+        if (strstr(line, "libgof2hdaa.so") || strstr(line, "/libc.so") ||
+            strstr(line, "/libm.so") || strstr(line, "/libGLESv2.so") ||
+            strstr(line, "/gof2hd")) {
+            char* nl = strchr(line, '\n');
+            if (nl) *nl = 0;
+            int n = snprintf(out, sizeof(out), "  map: %s\n", line);
+            if (n > 0) write(2, out, n);
+        }
+    }
+    fclose(f);
+}
+
 static void crash_handler(int sig, siginfo_t* si, void* uc) {
     ucontext_t* u = (ucontext_t*)uc;
     char buf[512];
@@ -43,6 +63,7 @@ static void crash_handler(int sig, siginfo_t* si, void* uc) {
         u->uc_mcontext.arm_r6, u->uc_mcontext.arm_r7,
         u->uc_mcontext.arm_sp, u->uc_mcontext.arm_lr, u->uc_mcontext.arm_pc);
     if (n > 0) write(2, buf, n);
+    dump_module_maps();
     _exit(128 + sig);
 }
 
@@ -127,6 +148,7 @@ static long now_ms(void) {
  * (WrawState); gof2hd.c only feeds it: normalized stick + D-pad flags. */
 static int g_dpad[4];              /* up / down / left / right hold flags */
 static int g_prev_a, g_prev_x, g_prev_b;  /* engine touch/back edges */
+static int g_prev_cx, g_prev_cy;   /* last touch point sent to the engine */
 
 /* ---- gamepad: SDL2 joystick subsystem sees our uinput device ---- */
 static SDL_Window* g_win = NULL;
@@ -275,11 +297,19 @@ static void pump_engine_input(JNIEnv* env, jclass cls) {
     overlay_get_cursor(&cx, &cy);
     int a = overlay_get_btn(WRAW_BTN_A);
     if (a && !g_prev_a) {
+        g_prev_cx = cx; g_prev_cy = cy;
         p_handleTouchEvent(env, cls, 722, 0, cx, cy);
         fprintf(stderr, "[pad] touch down %d,%d\n", cx, cy);
     } else if (!a && g_prev_a) {
         p_handleTouchEvent(env, cls, 722, 1, cx, cy);
         fprintf(stderr, "[pad] touch up %d,%d\n", cx, cy);
+    } else if (a && (cx != g_prev_cx || cy != g_prev_cy)) {
+        /* drag: while A is held, the held finger follows the cursor as the
+         * stick/D-pad moves it (action 2 = move) */
+        g_prev_cx = cx; g_prev_cy = cy;
+        p_handleTouchEvent(env, cls, 722, 2, cx, cy);
+        if (getenv("GOF_VERBOSE_JNI"))
+            fprintf(stderr, "[pad] touch move %d,%d\n", cx, cy);
     }
     g_prev_a = a;
 
