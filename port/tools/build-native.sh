@@ -57,8 +57,6 @@ mkdir -p "$OUT"
 cp "$P/shim"/libc.so "$P/shim"/liblog.so "$P/shim"/libandroid.so "$P/shim"/libm.so "$P/shim"/libdl.so "$OUT"/
 cp "$P/gles-stub"/libGLESv2.so "$OUT"/libGLESv2.so
 cp "$P/gles-stub"/libGLESv2.so "$OUT"/libGLESv1_CM.so
-cp "$P/gles-stub"/libGLESv2.so "$OUT"/libEGL.so
-cp "$P/gles-stub"/libGLESv2.so "$OUT"/libEGL.so.1
 cp "$P/host/gof2hd" "$OUT"/
 [ -f /root/gof2hd/libgof2hdaa.so ] && \
     cp /root/gof2hd/libgof2hdaa.so "$OUT"/ || \

@@ -20,8 +20,9 @@
 ## 2. Видео-путь (работает)
 
 - Хост рисует через **SDL2** (видеодрайвер `mali`, ядро fb0) + EGL.
-- SDL грузит наш `libEGL.so.1` из `run-native`, наши EGL-символы форвардятся
-  на реальные из `libmali.so` (`gles-stub/gles-bridge.c`, секция EGL_FWD).
+- SDL сам находит и грузит EGL (несмотря на пустышку `/usr/lib32/libEGL.so.1`
+  без символов — SDL2 пробует свои пути, включая libmali), поэтому никакого
+  EGL-кода или подложенных библиотек в порте нет вовсе.
 - В логе: `SDL window ready (video driver: mali)`, `logo=1` — рендер идёт.
 
 ## 3. Геймпад (ввод)
@@ -81,7 +82,7 @@ bash /root/gof2hd/port/tools/start-game.sh
 
 - Сборка идёт ТОЛЬКО на устройстве (`gcc/g++ arm-linux-gnueabihf`, SDL2 dev
   в системе). `build-native.sh` собирает: shim (libc/liblog/libandroid/libm/libdl),
-  GLES+EGL мост (`gles-bridge.c` → `libGLESv2.so`, из него же `libEGL.so(.1)`),
+  GLES+EGL мост (`gles-bridge.c` → `libGLESv2.so`; EGL — SDL находит сам),
   FMOD-заглушки, хост `gof2hd` (`-lSDL2`), патчит e_flags игры soft→hardfp.
 - `start-game.sh` ставит env: `SDL_AUDIODRIVER=dummy` (видеодрайвер SDL2
   выбирает сам),
@@ -144,9 +145,10 @@ __attribute__((pcs("aapcs"))) void clear_soft(float r,float g,float b,float a) {
 - `pcs("aapcs")` = softfp-приёмник (float приходит в r0-r3)
 - `pcs("aapcs-vfp")` = hardfp-указатель (float в s0-s15)
 
-Обёртки живут в: `gles-stub/gles-bridge.c` (GLES + EGL→libmali), `shim/libm.c`
-(float-math), `shim/stdio.c`, `shim/abi.c`. У EGL нет float-аргументов, поэтому
-для него работает универсальный `EGL_FWD`-макрос (8×`void*`).
+Обёртки живут в: `gles-stub/gles-bridge.c` (GLES→libmali), `shim/libm.c`
+(float-math), `shim/stdio.c`, `shim/abi.c`. EGL движок не использует:
+контекст создаёт SDL, а тот находит EGL сам (см. §2) — никакого кода EGL
+в мосте нет.
 
 **Почему нельзя просто `SF float acosf(float a) { return acosf(a); }`:**
 - Это рекурсивный вызов самого себя (компилятор видит вызов символа `acosf`,
@@ -170,7 +172,8 @@ SF float acosf(float a) { return gl_acosf(a); }  // вызов через HF-poi
 `__HF` указатель на libmali), и в `stdio.c`/`shim.c`.
 
 **Важно о GLES:** движок импортирует **только GLES2-символы** (проверено
-`readelf`; GLES1-функций в UND-списке нет), поэтому в мосте только они + EGL.
+`readelf`; GLES1-функций в UND-списке нет), поэтому в мосте только они.
+EGL в движке нет вовсе — его контекст не создаётся игрой.
 
 ## 7. Версии символов и маппинг на glibc (решено: ELF-патч)
 
@@ -240,7 +243,7 @@ attr=36, mutexattr=4, condattr=4, sem_t=16, key_t=4, once_t=4.
 | JNI-эмуляция | `host/jni.c`, `jni.h` | Фейковые JavaVM/Jobject/jstring |
 | libc shim | `shim/shim.c`, `abi.c`, `sscanf.c`, `stdio.c` | трансляция `@LIBC`-набора (FILE/stat/pthread), спецсимволы |
 | libm shim | `shim/libm.c`, `libm.map` | float-math `@LIBC` (softfp→hardfp) |
-| GLES+EGL bridge | `gles-stub/gles-bridge.c` | softfp→hardfp в libmali, GLES2 + EGL-форварды |
+| GLES bridge | `gles-stub/gles-bridge.c` | softfp→hardfp GLES2 в libmali (EGL движок не использует) |
 | fmod stubs | `fmodex-stub/` | Заглушки аудио FMOD |
 | Патч версий | `tools/patch-versions.py` | зануляет VERSYM у не-shim импортов движка |
 | Сборка | `tools/build-native.sh` | всё на устройстве |
