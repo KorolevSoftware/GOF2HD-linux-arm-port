@@ -201,12 +201,18 @@ export GOF_SHOW_CURSOR=1
 
 ## 7. Ограничения / статус
 
-- Аудио (FMOD) — заглушки (`fmodex-stub/`), звука нет.
+- Аудио — **работает**: реальные `libfmodex.so`/`libfmodevent.so` из APK
+  (патч e_flags) + фейковый OpenSL ES (`libOpenSLES.c`), который маршрутизирует
+  PCM-буферы FMOD в SDL2 → ALSA. Логотип/внутриигровые звуки воспроизводятся.
+- Для аудио нужны LD_PRELOAD: `cpuinfo_fake.so` (FMOD читает /proc/cpuinfo и
+  требует `neon/vfp`) и `pthread_bionic.so` (bionic pthread/sem → glibc).
+  `start-game.sh` ставит их автоматически; `gof2hd` сам вызывает
+  `FMOD_Memory_Initialize` (glibc malloc вместо внутреннего пула FMOD).
 - Ввод — встроенный геймпад через SDL2 (см. раздел 4); маппинг заточен
   под факт устройства консоли.
-- Проверено: логотип → главное меню с анимированным фоном, стабильный рендер,
-  курсор движется стиком/крестовиной, A — тап, B — Back. Дальнейший
-  прогресс по кампании на устройстве не проверялся.
+- Проверено: логотип (со звуком), стабильный рендер, курсор движется
+  стиком/крестовиной, A — тап, B — Back. Переход в главное меню иногда
+  затягивается (прогресс по кампании на устройстве не проверялся).
 
 ## 8. Структура проекта
 
@@ -218,8 +224,10 @@ export GOF_SHOW_CURSOR=1
 | libc shim | `shim/shim.c`, `abi.c`, `sscanf.c` | bionic-символы `@LIBC` → glibc |
 | libm shim | `shim`/libm.c, `libm.map` | float-math `@LIBC` |
 | GLES bridge | `gles-stub/gles-bridge.c` | мост softfp→hardfp GLES2 в libmali (EGL движок не использует) |
-| fmod stubs | `fmodex-stub/` | заглушки аудио |
-| Сборка | `tools/build-native.sh` | всё на устройстве |
+| fmod stubs | `fmodex-stub/` | заглушки аудио (не используются) |
+| OpenSL фейк | `fmodex-stub/libOpenSLES.c` | PCM-буферы FMOD → SDL2/ALSA (звук) |
+| pthread/cpuinfo | `fmodex-stub/pthread_bionic.c`, `cpuinfo_fake.c` | LD_PRELOAD: bionic pthread→glibc, фейк /proc/cpuinfo |
+| Сборка | `tools/build-native.sh` | всё на устройстве (в т.ч. копирование реальных FMOD из APK) |
 | Запуск | `tools/start-game.sh` | одна команда |
 | Техотчёт | `GOF2HD_PORT_NOTES.md` | ABI-детали, история решений |
 </content>
