@@ -43,7 +43,9 @@ fi
 echo "[3] запускаю игру"
 cd "$RUN_DIR"
 export GOF_SHOW_CURSOR=1
-export SDL_AUDIODRIVER=dummy
+export SDL_AUDIODRIVER=alsa
+# bionic pthread/sem translation + fake /proc/cpuinfo (FMOD CPU detection)
+export LD_PRELOAD="$RUN_DIR/cpuinfo_fake.so:$RUN_DIR/pthread_bionic.so"
 export LD_LIBRARY_PATH=.:/usr/lib32
 : > "$LOG_FILE"
 setsid ./gof2hd "$APK" "$OBB" "$DATA" >"$LOG_FILE" 2>&1 </dev/null &

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Native build of the GOF2HD port stack directly on the device.
-# Requires: gcc, g++, make, dlfcn (glibc dev), libmali (or Mesa GLES).
+# Requires: gcc, g++, make, dlfcn (glibc dev), libmali (or Mesa GLES), SDL2 dev,
+#           unzip, python3.
 # Everything is built hardfp against the device's own glibc, so no
 # cross-compiler or version mismatches.
 set -euo pipefail
@@ -27,9 +28,33 @@ done
 echo "== building gles bridge =="
 "$CC" $CFLAGS -shared -fPIC -o "$OUT/libGLESv2.so" "$P/gles-stub/gles-bridge.c" -ldl
 
-echo "== building fmod stubs =="
-"$CC" $CFLAGS -shared -fPIC -o "$OUT/libfmodex.so" "$P/fmodex-stub/fmodex_stub.c"
-"$CXX" $CFLAGS -shared -fPIC -o "$OUT/libfmodevent.so" "$P/fmodex-stub/fmodevent_stub.cpp"
+echo "== building audio/bionic-compat helpers =="
+# bionic pthread/sem translation (LD_PRELOAD) + fake /proc/cpuinfo (FMOD CPU detect)
+"$CC" $CFLAGS -shared -fPIC -o "$OUT/pthread_bionic.so" "$P/fmodex-stub/pthread_bionic.c" -ldl -lpthread
+"$CC" $CFLAGS -shared -fPIC -o "$OUT/cpuinfo_fake.so" "$P/fmodex-stub/cpuinfo_fake.c" -ldl
+# libstdc++ shim for bionic C++ runtime symbols
+"$CXX" $CFLAGS -shared -fPIC -o "$OUT/libstdc++.so" "$P/fmodex-stub/libstdcxx_stub.c"
+# fake OpenSL ES -> SDL2 audio (the Android FMOD opensl output)
+"$CC" $CFLAGS -shared -fPIC -o "$OUT/libOpenSLES.so" "$P/fmodex-stub/libOpenSLES.c" -lSDL2 -lSDL2main -L/usr/lib32
+
+echo "== real FMOD from base.apk =="
+APK="${GOF_APK:-$P/../base.apk}"
+[ -f "$APK" ] || { echo "!! base.apk not found at $APK"; exit 1; }
+unzip -o -j "$APK" lib/armeabi-v7a/libfmodex.so lib/armeabi-v7a/libfmodevent.so -d "$OUT" >/dev/null
+
+echo "== patching FMOD e_flags soft-float -> hard-float (0x5000200 -> 0x5000400) =="
+python3 - "$OUT/libfmodex.so" "$OUT/libfmodevent.so" <<'PYEOF'
+import struct, sys
+for path in sys.argv[1:]:
+    f = open(path, "r+b")
+    f.seek(0x24)
+    v = struct.unpack("<I", f.read(4))[0]
+    new = (v & ~0x200) | 0x400
+    f.seek(0x24)
+    f.write(struct.pack("<I", new))
+    f.close()
+    print(f"  {path} e_flags 0x{v:08x} -> 0x{new:08x}")
+PYEOF
 
 echo "== building host (SDL2) =="
 "$CC" $CFLAGS -rdynamic -o "$OUT/gof2hd" "$P/host/gof2hd.c" "$P/host/jni.c" "$P/host/wrap_overlay.c" \

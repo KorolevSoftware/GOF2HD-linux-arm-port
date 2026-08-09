@@ -405,6 +405,48 @@ fault-адрес = r0+0x11. Причина: `play()` с не-NULL объекто
   нужные куски вырезать `dd` + `llvm-objcopy -I binary --rename-section` в .text.
 - `md5sum` сверка бинарников ПК↔устройство перед анализом (и патчем).
 
+## 12.5. FMOD-аудио: РАБОТАЕТ (2026-08-09)
+
+Звук заведён: реальные `libfmodex.so`/`libfmodevent.so` (4.44.07) из APK +
+фейковый OpenSL ES + preload-хелперы. Что понадобилось:
+
+1. **e_flags** у FMOD-либ: softfp→hardfp (как у движка). Без этого hardfp
+   загрузчик не грузит их.
+2. **`cpuinfo_fake.so`** (LD_PRELOAD, подмена open("/proc/cpuinfo")): FMOD
+   читает cpuinfo и без строк `neon vfp vfpv3` выбирает недоступный код —
+   `EventSystem::init`/`SetOutput` возвращают 48 (NOTREADY).
+3. **`pthread_bionic.so`** (LD_PRELOAD, трансляция bionic pthread/sem/attr):
+   bionic pthread_mutex_t=4B vs glibc 24B. glibc, писать в 4-байтный слот,
+   затирает соседние структуры FMOD → краши.
+4. **`FMOD_Memory_Initialize(NULL,0,malloc,realloc,free,...)`** из хоста:
+   у FMOD свой внутренний пул-аллокатор, который в игре возвращал NULL на
+   `FMOD_EventSystem_Create` (падение в `FUN_0004dba0`). Переключение на
+   glibc malloc убирает падение полностью.
+5. **`libOpenSLES.so`** — фейк OpenSL ES (opensl-выход — дефолтный для FMOD).
+   Критичные ABI-детали (найдены методом проб на устройстве):
+   - Хендлы OpenSL — **указатель-на-указатель**: `(*obj)->M` компилируется
+     в `**obj` затем `->M`. slCreateEngine/CreateOutputMix/CreateAudioPlayer/
+     GetInterface обязаны возвращать АДРЕС переменной-указателя, держащей
+     адрес структуры (иначе FMOD прыгает в первый dword функции → SIGBUS).
+   - Этот FMOD передаёт SLInterfaceID как 32-битное ЗНАЧЕНИЕ первого слова
+     константы (0x2e=bufferqueue, 0x2f=play, 0x28=volume, 0x2b=androidcfg,
+     0x80=androidsimplebufferqueue). Сравнивать memcmp'ом нельзя (краш).
+   - Раскладка SLEngineItf у этого билда: CreateAudioPlayer@2,
+     CreateOutputMix@7 (не как в стоковом OpenSL ES). Все слоты заполнены
+     no-op, чтобы любой индекс был безопасен.
+   - BufferQueue Enqueue → `SDL_QueueAudio`, pacing-тред зовёт callback FMOD
+     пока очередь не опустела. `SDL_AUDIODRIVER=alsa`.
+6. **libstdc++.so**: bionic-стаб (`__cxa_*`, `_ZdlPv`, `__aeabi_atexit`) —
+   обязателен `extern "C"` (FMOD ссылается на НЕзамангленные имена
+   `__cxa_pure_virtual` и т.п.).
+
+`start-game.sh` ставит `LD_PRELOAD="cpuinfo_fake.so:pthread_bionic.so"` и
+`SDL_AUDIODRIVER=alsa`; `build-native.sh` копирует реальные FMOD из `base.apk`
+(патч e_flags) и собирает все хелперы.
+
+Осталось открытым: переход игры в главное меню иногда затягивается
+(не связано с аудио-инициализацией), прогресс по кампании не проверен.
+
 ## 12. TODO / открытое
 
 - [ ] Реализовать план 11.5 (задержка реплик ~3 с) и протестировать на станции.

@@ -41,7 +41,10 @@ static void dump_module_maps(void) {
     while (fgets(line, sizeof(line), f)) {
         if (strstr(line, "libgof2hdaa.so") || strstr(line, "/libc.so") ||
             strstr(line, "/libm.so") || strstr(line, "/libGLESv2.so") ||
-            strstr(line, "/gof2hd")) {
+            strstr(line, "/gof2hd") || strstr(line, "libfmodev") ||
+            strstr(line, "libfmodex") || strstr(line, "libOpenSLES") ||
+            strstr(line, "libSDL") || strstr(line, "pthread_bionic") ||
+            strstr(line, "cpuinfo_fake")) {
             char* nl = strchr(line, '\n');
             if (nl) *nl = 0;
             int n = snprintf(out, sizeof(out), "  map: %s\n", line);
@@ -56,13 +59,32 @@ static void crash_handler(int sig, siginfo_t* si, void* uc) {
     char buf[512];
     int n = snprintf(buf, sizeof(buf),
         "\n=== crash signal %d (%s), fault %p r0=%x r1=%x r2=%x r3=%x\n"
-        "  r4=%x r5=%x r6=%x r7=%x sp=%x lr=%x pc=%x\n",
+        "  r4=%x r5=%x r6=%x r7=%x r8=%x r9=%x r10=%x r11=%x fp=%x sp=%x lr=%x pc=%x\n",
         sig, strsignal(sig), si->si_addr,
         u->uc_mcontext.arm_r0, u->uc_mcontext.arm_r1, u->uc_mcontext.arm_r2,
         u->uc_mcontext.arm_r3, u->uc_mcontext.arm_r4, u->uc_mcontext.arm_r5,
-        u->uc_mcontext.arm_r6, u->uc_mcontext.arm_r7,
-        u->uc_mcontext.arm_sp, u->uc_mcontext.arm_lr, u->uc_mcontext.arm_pc);
+        u->uc_mcontext.arm_r6, u->uc_mcontext.arm_r7, u->uc_mcontext.arm_r8,
+        u->uc_mcontext.arm_r9, u->uc_mcontext.arm_r10, u->uc_mcontext.arm_fp,
+        u->uc_mcontext.arm_fp, u->uc_mcontext.arm_sp, u->uc_mcontext.arm_lr,
+        u->uc_mcontext.arm_pc);
     if (n > 0) write(2, buf, n);
+    /* stack walk: dump words that look like code addresses (libs 0xf0-0xfa) */
+    {
+        unsigned sp = u->uc_mcontext.arm_sp;
+        char sb[96];
+        n = snprintf(sb, sizeof(sb), "  [stack walk sp=0x%08x]\n", sp);
+        if (n > 0) write(2, sb, n);
+        for (int i = 0; i < 256; i += 4) {
+            unsigned long addr = (unsigned long)(unsigned long)sp + (unsigned)i;
+            if (addr < 0x30000000ul) break;
+            volatile unsigned* w = (volatile unsigned*)addr;
+            unsigned v = *w;
+            if (v >= 0xf0000000u && v <= 0xfaffffffu) {
+                n = snprintf(sb, sizeof(sb), "  sp+0x%04x: 0x%08x\n", i, v);
+                if (n > 0) write(2, sb, n);
+            }
+        }
+    }
     dump_module_maps();
     _exit(128 + sig);
 }
@@ -428,6 +450,35 @@ static void sdl_swap(void) {
     SDL_GL_SwapWindow(g_win);
 }
 
+/*
+ * Override FMOD's internal pool allocator with glibc malloc.  The Android
+ * FMOD build uses a tiny internal memory pool; on Linux that pool gets
+ * exhausted/corrupted (the game crashes in FMOD_EventSystem_Create with the
+ * allocator returning NULL).  FMOD_Memory_Initialize is public API; the
+ * callbacks take no float args so softfp/hardfp ABI does not matter.
+ */
+typedef void* (*fmod_alloc_fn)(unsigned int, unsigned int, const char*);
+typedef void* (*fmod_realloc_fn)(void*, unsigned int, unsigned int, const char*);
+typedef void  (*fmod_free_fn)(void*, unsigned int, const char*);
+typedef int   (*fmod_meminit_fn)(void*, int, fmod_alloc_fn, fmod_realloc_fn,
+                                 fmod_free_fn, int, void*);
+
+static void* g_fmod_alloc(unsigned int size, unsigned int type, const char* src)
+{ (void)type; (void)src; return malloc(size); }
+static void* g_fmod_realloc(void* p, unsigned int size, unsigned int type, const char* src)
+{ (void)type; (void)src; return realloc(p, size); }
+static void g_fmod_free(void* p, unsigned int type, const char* src)
+{ (void)type; (void)src; free(p); }
+
+static void fmod_memory_override(void) {
+    void* h = dlopen("libfmodex.so", RTLD_NOW | RTLD_GLOBAL);
+    if (!h) { fprintf(stderr, "[host] fmod_memory_override: no libfmodex\n"); return; }
+    fmod_meminit_fn init = (fmod_meminit_fn)dlsym(h, "FMOD_Memory_Initialize");
+    if (!init) { fprintf(stderr, "[host] fmod_memory_override: no FMOD_Memory_Initialize\n"); return; }
+    int r = init(NULL, 0, g_fmod_alloc, g_fmod_realloc, g_fmod_free, 0, NULL);
+    fprintf(stderr, "[host] FMOD_Memory_Initialize -> %d (glibc malloc)\n", r);
+}
+
 int main(int argc, char** argv) {
     if (argc < 4) {
         fprintf(stderr,
@@ -453,6 +504,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[host] warn: libfmodex: %s\n", dlerror());
     if (!dlopen("libfmodevent.so", RTLD_NOW | RTLD_GLOBAL))
         fprintf(stderr, "[host] warn: libfmodevent: %s\n", dlerror());
+    fmod_memory_override();
     void* h = dlopen("libgof2hdaa.so", RTLD_NOW | RTLD_GLOBAL);
     if (!h) { fprintf(stderr, "[host] cannot load libgof2hdaa.so: %s\n", dlerror()); return 1; }
 
