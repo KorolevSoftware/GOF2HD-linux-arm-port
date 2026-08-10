@@ -53,9 +53,11 @@ if ls "$GOF_ROOT"/data/audio/*.fsb >/dev/null 2>&1; then
 fi
 export GOF_SHOW_CURSOR=1
 export SDL_AUDIODRIVER=alsa
-# caller-aware stdio bridge: FMOD + engine stdio -> shim libc.so (bionic FILE),
-# host/SDL/ALSA -> glibc. Fixes FMOD_ERR_FILE_EOF (22) on FEV load.
-export LD_PRELOAD="$RUN_DIR/libfmod_stdio.so:$RUN_DIR/cpuinfo_fake.so:$RUN_DIR/pthread_bionic.so"
+# FMOD streams FEV/FSB through its thread-safe POSIX filesystem callback.
+export LD_PRELOAD="$RUN_DIR/libfmod_filesystem.so:$RUN_DIR/cpuinfo_fake.so:$RUN_DIR/pthread_bionic.so"
+# Android FMOD is softfp but glibc libm is hardfp.  Preload the shared bionic
+# libm bridge first so FMOD's unversioned math imports use the safe ABI.
+export LD_PRELOAD="$RUN_DIR/libm.so:$LD_PRELOAD"
 export LD_LIBRARY_PATH=.:/usr/lib32
 : > "$LOG_FILE"
 setsid ./gof2hd "$APK" "$OBB" "$DATA" >"$LOG_FILE" 2>&1 </dev/null &

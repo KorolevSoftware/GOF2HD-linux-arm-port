@@ -36,10 +36,8 @@ echo "== building audio/bionic-compat helpers =="
 "$CXX" $CFLAGS -shared -fPIC -o "$OUT/libstdc++.so" "$P/fmodex-stub/libstdcxx_stub.c"
 # fake OpenSL ES -> SDL2 audio (the Android FMOD opensl output)
 "$CC" $CFLAGS -shared -fPIC -o "$OUT/libOpenSLES.so" "$P/fmodex-stub/libOpenSLES.c" -lSDL2 -lSDL2main -L/usr/lib32
-# caller-aware stdio bridge: routes real (bionic) FMOD fopen/fread/fseek/ftell
-# to the shim libc.so (bionic FILE pool + correct _flags at FILE+12); all other
-# callers (host, SDL2, ALSA) keep glibc. Fixes FMOD_ERR_FILE_EOF (22) on FEV load.
-"$CC" $CFLAGS -shared -fPIC -o "$OUT/libfmod_stdio.so" "$P/fmodex-stub/libfmod_stdio.c" -ldl
+# FMOD streams FEV/FSB through a thread-safe POSIX filesystem callback.
+"$CC" $CFLAGS -shared -fPIC -o "$OUT/libfmod_filesystem.so" "$P/fmodex-stub/fmod_filesystem.c" -ldl
 
 echo "== real FMOD from base.apk =="
 APK="${GOF_APK:-$P/../base.apk}"

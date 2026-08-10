@@ -24,10 +24,12 @@
  *     are filled with no-ops so any index FMOD touches is safe.
  */
 #define _GNU_SOURCE
+#include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <unistd.h>
 
 #include <SDL2/SDL.h>
@@ -45,8 +47,10 @@ typedef struct SLAndroidConfigurationItf_* SLAndroidConfigurationItf;
 
 #define SL_RESULT_SUCCESS   ((SLresult) 0)
 #define SL_OBJECT_STATE_REALIZED ((SLuint32) 1)
-#define SL_PLAYSTATE_PLAYING     ((SLuint32) 1)
-#define SL_DATAFORMAT_PCM        ((SLuint32) 3)
+#define SL_PLAYSTATE_STOPPED     ((SLuint32) 1)
+#define SL_PLAYSTATE_PAUSED      ((SLuint32) 2)
+#define SL_PLAYSTATE_PLAYING     ((SLuint32) 3)
+#define SL_DATAFORMAT_PCM        ((SLuint32) 2)
 
 /* FMOD references these data symbols (SL_IID_ENGINE must exist at dlopen). */
 const unsigned char SL_IID_ENGINE[16] = {0x30,0,0,0,0x01,0,0x40,0x02,0xC4,0x9A,0x9B,0x51,0x64,0x9A,0xD6,0xAF};
@@ -156,6 +160,7 @@ static struct SLBufferQueueItf_* g_bq_if_h;
 /* ========================= SDL audio ========================= */
 static SDL_AudioDeviceID g_sdl_dev = 0;
 static int g_sdl_freq = 44100, g_sdl_ch = 2;
+static int g_input_freq = 44100, g_input_ch = 2;
 
 static void audio_open(void) {
     SDL_AudioSpec want, got;
@@ -164,7 +169,10 @@ static void audio_open(void) {
     }
     SDL_zero(want);
     want.freq = g_sdl_freq; want.format = AUDIO_S16SYS; want.channels = g_sdl_ch; want.samples = 1024;
-    g_sdl_dev = SDL_OpenAudioDevice(NULL, 0, &want, &got, 0);
+    for (int attempt = 0; attempt < 20 && !g_sdl_dev; ++attempt) {
+        g_sdl_dev = SDL_OpenAudioDevice(NULL, 0, &want, &got, 0);
+        if (!g_sdl_dev) usleep(100000);
+    }
     if (!g_sdl_dev) { DLOG("SDL_OpenAudioDevice fail: %s", SDL_GetError()); return; }
     SDL_PauseAudioDevice(g_sdl_dev, 0);
     DLOG("SDL audio device opened: %d Hz %d ch", got.freq, got.channels);
@@ -184,34 +192,123 @@ static void obj_Destroy(SLObjectItf self) { DLOG("obj_Destroy %p", (void*)self);
 static void (*g_bq_callback)(SLBufferQueueItf, void*) = NULL;
 static void* g_bq_context = NULL;
 static unsigned g_last_size = 4096;
+static unsigned g_enqueue_count;
+static SLuint32 g_play_state = SL_PLAYSTATE_STOPPED;
+static pthread_mutex_t g_bq_lock = PTHREAD_MUTEX_INITIALIZER;
+static SLuint32 g_bq_count;
+static SLuint32 g_bq_index;
 
 static SLresult bq_Enqueue(SLBufferQueueItf self, const void* b, SLuint32 sz) {
-    DLOG("bq.Enqueue %u queued=%u", sz, (unsigned)SDL_GetQueuedAudioSize(g_sdl_dev));
-    g_last_size = sz;
-    if (g_sdl_dev) SDL_QueueAudio(g_sdl_dev, b, sz);
+    unsigned enqueue_count = ++g_enqueue_count;
+    if (g_dbg && b && sz >= sizeof(int16_t) && (enqueue_count <= 3 || (enqueue_count % 120) == 0)) {
+        const int16_t *samples = (const int16_t *)b;
+        unsigned count = sz / sizeof(*samples);
+        int lo = samples[0], hi = samples[0];
+        for (unsigned i = 1; i < count; ++i) {
+            if (samples[i] < lo) lo = samples[i];
+            if (samples[i] > hi) hi = samples[i];
+        }
+        DLOG("bq.Enqueue %u queued=%u PCM16=[%d,%d]", sz,
+             (unsigned)SDL_GetQueuedAudioSize(g_sdl_dev), lo, hi);
+    }
+    unsigned queued_size = sz;
+    void *resampled = NULL;
+    if (g_sdl_dev && g_sdl_freq == g_input_freq * 2 &&
+        g_sdl_ch == g_input_ch && g_input_ch > 0) {
+        unsigned frames = sz / (sizeof(int16_t) * (unsigned)g_input_ch);
+        int16_t *output = malloc((size_t)frames * g_input_ch * 2 * sizeof(*output));
+        if (output) {
+            const int16_t *input = b;
+            for (unsigned frame = 0; frame < frames; ++frame) {
+                for (int channel = 0; channel < g_input_ch; ++channel) {
+                    int16_t sample = input[frame * g_input_ch + channel];
+                    output[(frame * 2) * g_input_ch + channel] = sample;
+                    output[(frame * 2 + 1) * g_input_ch + channel] = sample;
+                }
+            }
+            resampled = output;
+            queued_size = frames * g_input_ch * 2 * sizeof(*output);
+        }
+    }
+    g_last_size = queued_size;
+    pthread_mutex_lock(&g_bq_lock);
+    ++g_bq_count;
+    pthread_mutex_unlock(&g_bq_lock);
+    if (g_sdl_dev) SDL_QueueAudio(g_sdl_dev, resampled ? resampled : b, queued_size);
+    free(resampled);
     return SL_RESULT_SUCCESS;
 }
 static SLresult bq_RegisterCallback(SLBufferQueueItf self, void (*cb)(SLBufferQueueItf, void*), void* ctx) {
     DLOG("bq.RegisterCallback cb=%p", (void*)cb);
     g_bq_callback = cb; g_bq_context = ctx; return SL_RESULT_SUCCESS;
 }
+
+static void bq_consume_once(void) {
+    unsigned queued = g_sdl_dev ? SDL_GetQueuedAudioSize(g_sdl_dev) : 0;
+    int consumed = 0;
+    static unsigned consume_calls;
+    if (queued < g_last_size * 3) {
+        pthread_mutex_lock(&g_bq_lock);
+        if (g_bq_count) {
+            --g_bq_count;
+            ++g_bq_index;
+            consumed = 1;
+        }
+        pthread_mutex_unlock(&g_bq_lock);
+    }
+    ++consume_calls;
+    if (g_dbg && (consume_calls <= 3 || (consume_calls % 120) == 0))
+        DLOG("bq.consume queued=%u count=%u callback=%p", queued, g_bq_count,
+             (void *)g_bq_callback);
+    if (consumed && g_bq_callback)
+        g_bq_callback((SLBufferQueueItf)&g_bq_if_h, g_bq_context);
+}
+
 static void* bq_thread_fn(void* arg) {
     DLOG("bq pacing thread started");
     for (;;) {
-        usleep(10000);
-        if (g_bq_callback) {
-            unsigned queued = g_sdl_dev ? SDL_GetQueuedAudioSize(g_sdl_dev) : 0;
-            if (queued < g_last_size * 2) g_bq_callback(&g_bq_if_h, g_bq_context);
-        }
+        /* One completion callback per PCM block.  Calling it every 10 ms for
+         * FMOD's 21.33 ms blocks fills the queue and permanently stalls it. */
+        unsigned int wait_us = g_sdl_freq > 0 && g_sdl_ch > 0 ?
+            (unsigned int)((uint64_t)g_last_size * 1000000u /
+                           ((unsigned)g_sdl_freq * (unsigned)g_sdl_ch * sizeof(int16_t))) : 21333;
+        usleep(wait_us ? wait_us : 21333);
+        if (g_bq_callback)
+            bq_consume_once();
     }
     return NULL;
 }
-static SLresult bq_Clear(SLBufferQueueItf self) { return SL_RESULT_SUCCESS; }
-static SLresult bq_GetState(SLBufferQueueItf self, SLuint32* st) { if (st) *st = 0; return SL_RESULT_SUCCESS; }
+static SLresult bq_Clear(SLBufferQueueItf self) {
+    (void)self;
+    pthread_mutex_lock(&g_bq_lock);
+    g_bq_count = 0;
+    pthread_mutex_unlock(&g_bq_lock);
+    if (g_sdl_dev) SDL_ClearQueuedAudio(g_sdl_dev);
+    return SL_RESULT_SUCCESS;
+}
+
+static SLresult bq_GetState(SLBufferQueueItf self, SLuint32* st) {
+    (void)self;
+    if (st) {
+        pthread_mutex_lock(&g_bq_lock);
+        /* SLAndroidSimpleBufferQueueState is two consecutive uint32 values. */
+        st[0] = g_bq_count;
+        st[1] = g_bq_index;
+        pthread_mutex_unlock(&g_bq_lock);
+    }
+    return SL_RESULT_SUCCESS;
+}
 static SLresult bq_GetBuffer(SLBufferQueueItf self, SLuint32 i, void** b, SLuint32* s) { (void)i; if(b)*b=0; if(s)*s=0; return SL_RESULT_SUCCESS; }
 
-static SLresult play_SetPlayState(SLPlayItf self, SLuint32 state) { DLOG("play.SetPlayState %u", state); return SL_RESULT_SUCCESS; }
-static SLresult play_GetPlayState(SLPlayItf self, SLuint32* state) { if (state) *state = SL_PLAYSTATE_PLAYING; return SL_RESULT_SUCCESS; }
+static SLresult play_SetPlayState(SLPlayItf self, SLuint32 state) {
+    g_play_state = state;
+    DLOG("play.SetPlayState %u", state);
+    return SL_RESULT_SUCCESS;
+}
+static SLresult play_GetPlayState(SLPlayItf self, SLuint32* state) {
+    if (state) *state = g_play_state;
+    return SL_RESULT_SUCCESS;
+}
 static SLresult play_GetDuration(SLPlayItf self, SLmillisecond* m) { if (m) *m = 0; return SL_RESULT_SUCCESS; }
 static SLresult play_GetPosition(SLPlayItf self, SLmillisecond* m) { if (m) *m = 0; return SL_RESULT_SUCCESS; }
 static SLresult play_RegPosCb(SLPlayItf self, void (*cb)(SLPlayItf, void*), void* c) { return SL_RESULT_SUCCESS; }
@@ -274,14 +371,31 @@ static SLresult eng_CreateOutputMix(SLEngineItf self, SLObjectItf* mix, SLuint32
 static SLresult eng_CreateAudioPlayer(SLEngineItf self, SLObjectItf* player, void* src, void* sink, SLuint32 n, const void* ids, const SLboolean* req) {
     DLOG("eng_CreateAudioPlayer n=%u", n);
     if (src) {
-        const void* fmt = ((const void**)src)[1];   /* SLDataSource { locator, format } */
-        const SLDataFormat_PCM* pcm = (const SLDataFormat_PCM*)fmt;
+        /* This FMOD build passes the format directly in some output paths
+         * and inside SLDataSource in others. Accept both layouts before
+         * opening SDL so the hardware format matches the mixer. */
+        const uintptr_t *source = (const uintptr_t *)src;
+        const SLDataFormat_PCM* pcm = (const SLDataFormat_PCM*)source[0];
+        if (!pcm || pcm->formatType != SL_DATAFORMAT_PCM)
+            pcm = (const SLDataFormat_PCM*)source[1];
         if (pcm && pcm->formatType == SL_DATAFORMAT_PCM) {
-            g_sdl_freq = pcm->samplesPerSec / 1000;
-            g_sdl_ch = pcm->numChannels;
-            DLOG("  PCM %u Hz x %u ch x %u bit", g_sdl_freq, g_sdl_ch, pcm->bitsPerSample);
+            g_input_freq = pcm->samplesPerSec / 1000;
+            g_input_ch = pcm->numChannels;
+            g_sdl_freq = g_input_freq == 24000 ? 48000 : g_input_freq;
+            g_sdl_ch = g_input_ch;
+            DLOG("  PCM %u Hz x %u ch x %u bit -> SDL %d Hz", g_input_freq,
+                 g_input_ch, pcm->bitsPerSample, g_sdl_freq);
+        } else {
+            DLOG("  unknown source layout: %p %p", (void*)source[0], (void*)source[1]);
+            if (g_dbg && source[0] && source[1]) {
+                const SLuint32 *left = (const SLuint32 *)source[0];
+                const SLuint32 *right = (const SLuint32 *)source[1];
+                DLOG("  source[0]: %08x %08x %08x %08x", left[0], left[1], left[2], left[3]);
+                DLOG("  source[1]: %08x %08x %08x %08x", right[0], right[1], right[2], right[3]);
+            }
         }
     }
+    if (!g_sdl_dev) audio_open();
     if (player) *player = &g_player_h;
     return SL_RESULT_SUCCESS;
 }
@@ -364,7 +478,6 @@ SLresult slCreateEngine(SLObjectItf* pEngine, SLuint32 numOptions, const void* p
                         const SLboolean* pInterfaceRequired) {
     DLOG("slCreateEngine");
     init_all();
-    audio_open();
     if (pEngine) *pEngine = &g_engine_h;
     pthread_t bt;
     pthread_create(&bt, NULL, bq_thread_fn, NULL);
