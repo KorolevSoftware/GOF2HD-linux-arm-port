@@ -447,6 +447,83 @@ fault-адрес = r0+0x11. Причина: `play()` с не-NULL объекто
 Осталось открытым: переход игры в главное меню иногда затягивается
 (не связано с аудио-инициализацией), прогресс по кампании не проверен.
 
+### 12.5.1. Загрузка FEV-проекта падает (FMOD_ERR=22) — корень: 64-битный off_t
+
+Звуковой ВЫХОД работает (logo-звук играет через opensl-fake → SDL → ALSA), но
+полноценное аудио (музыка/эмбиент/голоса) не играет: `FMOD::EventSystem::load`
+возвращает ошибку 22, события не создаются (слоты пусты → падение
+`stopAllSoundFXEvents` на станции, если не патчить движок).
+
+Диагноз (подтверждён трейсом fopen/fread/fseek/ftell):
+- Файл FEV читается КОРРЕКТНО (RIFF/FEV заголовок, 2048-байтные чанки).
+- `FMOD_System_CreateSound(wav)` → 19 (FORMAT), `CreateSound(OPENMEMORY)` → 37.
+- Причина: FMOD (bionic) — 64-битный off_t. Он читает `ftell()` как 64-битное
+  (r0:r1), а glibc возвращает 32-битное (r0 + мусор в r1) → размер файла
+  огромный/отрицательный → fseek в неверные места → заголовок wav/FEV не
+  читается → FORMAT/22.
+
+Движок решает это через shim/stdio.c (bionic FILE-пул, raw lseek64). FMOD-либы
+нужно ТАК ЖЕ привязать к shim stdio. Попытки:
+1. **version-патч** (добавить @LIBC к fopen/fread/fseek/ftell/fseeko/ftello
+   импортам FMOD, чтобы биндились в shim): структура верна (с мусором в имени
+   версии загрузчик даёт чистую ошибку `version 'ZZZZZ' not found`), но при
+   совпадении версии `LIBC` загрузчик падает в `check_match`
+   (`l_versions[v].name == NULL` у какого-то кандидата в scope). Инструмент был
+   `tools/patch-fmod-versions.py` (не закоммичен).
+2. **caller-aware прелоад** (для вызывающих из libfmodex/libfmodevent — shim
+   stdio, для остальных — glibc): падает на раннем старте.
+
+Следующему: починить version-патч (разобраться с check_match) ИЛИ найти иной
+способ привязать FTOD-функции FMOD к shim. Версия-патч — правильный путь.
+
+### 12.5.2. РЕШЕНО (2026-08-09): caller-aware прелоад `libfmod_stdio.so`
+
+Причина 22 оказалась не в 64-битном off_t (дизасм показал 32-битный ABI):
+FMOD после `fread()` читает bionic `__sFILE._flags` из `FILE+12`
+(`ldrh r3,[r4,#12]; tst r3,#32` → `__SEOF` → 22 / `ands r0,r3,#64` → 19).
+Когда FMOD привязан к glibc, `FILE+12` = `_IO_read_base` (указатель) → мусор
+в битах EOF/ERR → ложный `FMOD_ERR_FILE_EOF(22)` / `FILE_BAD(19)`.
+
+Решение — `port/fmodex-stub/libfmod_stdio.c`, грузится через LD_PRELOAD
+(первым в start-game.sh). Перехватывает `fopen/fread/fseek/ftell/fclose` и
+маршрутизирует по вызывающему (адрес возврата, `/proc/self/maps` через
+`open/read` — **не `dladdr`**: dladdr внутри interposed stdio на раннем старте
+валил движок):
+- вызывающие из `libgof2hdaa.so` + `libfmodex.so` + `libfmodevent.so` → shim
+  `libc.so` (bionic FILE-пул, `_flags` корректны) — это в точности воспроизводит
+  базовую раскладку, где shim предшествует glibc в scope движка;
+- все прочие (host/SDL2/ALSA) → glibc (`RTLD_NEXT`).
+
+Реализация `resolve_shim`: `dlopen(".../libc.so", RTLD_NOLOAD)` + `dlvsym(...,
+"LIBC")` (никакого повторного dlopen → конструктор shim не перезапускается,
+иначе __sF-пул обнуляется и ломается libzip). Сборка добавлена в
+`build-native.sh`; `start-game.sh` ставит `libfmod_stdio.so` первым в
+`LD_PRELOAD`.
+
+Проверено: `FMOD::EventSystem::load` → OK, FEV читается через shim, игра
+стабильно рендерит/звучит (логитип→меню, тысячи `[opensl] bq.Enqueue`).
+
+> Нюанс пути FEV: `FModSound::init()` строит путь как `appRootDir + "FMOD_GOF2.fev"`
+> (lowMemory=1) — при `appRootDir=/root/gof2hd/data` без слэша получается
+> `/root/gof2hd/dataFMOD_GOF2.fev`. Файл с этим именем должен существовать
+> (либо appRootDir оканчиваться на `/`).
+
+> Нюанс FSB-банков: FMOD ищет `.fsb` в каталоге FEV. Раз FEV живёт в
+> `/root/gof2hd/` (см. выше), `*.fsb` должны лежать рядом — `start-game.sh`
+> автоматически копирует их из `/root/gof2hd/data/audio/` в `/root/gof2hd/`.
+> Без этого `FMOD_EventSystem_GetEventBySystemID(mode=0)` → 23 (FILE_NOTFOUND),
+> события не создаются → «шум в динамиках», диалоги скипаются (движок не знает
+> длительности реплик). После копирования: события создаются, `Event_Start` OK,
+> `Event_GetState` st=0x18 (bit3 PLAYING), музыка/звуки играют.
+
+### 12.5.3. Открытая нестабильность (не связана с этим фиксом)
+
+Без и с прелоадом иногда наблюдается краш в libzip (`_zip_name_locate`,
+разыменование NULL архива) или SIGABRT в libpng (`Assertion 'k > 0'` в
+`src/basic/fileio.c:626`) — следствие смешивания shim (bionic) и glibc FILE в
+разных участках движка. Лечится чистой перезагрузкой консоли и повторным
+запуском (`start-game.sh`).
+
 ## 12. TODO / открытое
 
 - [ ] Реализовать план 11.5 (задержка реплик ~3 с) и протестировать на станции.

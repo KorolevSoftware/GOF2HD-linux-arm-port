@@ -42,10 +42,20 @@ fi
 # 3) запуск
 echo "[3] запускаю игру"
 cd "$RUN_DIR"
+# FMOD (bionic) ищет FSB-банки рядом с FEV. FEV-путь строится как
+# appRootDir + "FMOD_GOF2.fev" (без слэша) = $GOF_ROOT/dataFMOD_GOF2.fev,
+# поэтому FMOD ищет .fsb в $GOF_ROOT. Скопируем банки туда, если их нет.
+if ls "$GOF_ROOT"/data/audio/*.fsb >/dev/null 2>&1; then
+    for f in "$GOF_ROOT"/data/audio/*.fsb; do
+        b=$(basename "$f")
+        [ -f "$GOF_ROOT/$b" ] || cp "$f" "$GOF_ROOT/$b"
+    done
+fi
 export GOF_SHOW_CURSOR=1
 export SDL_AUDIODRIVER=alsa
-# bionic pthread/sem translation + fake /proc/cpuinfo (FMOD CPU detection)
-export LD_PRELOAD="$RUN_DIR/cpuinfo_fake.so:$RUN_DIR/pthread_bionic.so"
+# caller-aware stdio bridge: FMOD + engine stdio -> shim libc.so (bionic FILE),
+# host/SDL/ALSA -> glibc. Fixes FMOD_ERR_FILE_EOF (22) on FEV load.
+export LD_PRELOAD="$RUN_DIR/libfmod_stdio.so:$RUN_DIR/cpuinfo_fake.so:$RUN_DIR/pthread_bionic.so"
 export LD_LIBRARY_PATH=.:/usr/lib32
 : > "$LOG_FILE"
 setsid ./gof2hd "$APK" "$OBB" "$DATA" >"$LOG_FILE" 2>&1 </dev/null &
