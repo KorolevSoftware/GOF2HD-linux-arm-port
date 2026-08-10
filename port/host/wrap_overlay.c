@@ -152,10 +152,10 @@ void overlay_get_gyro(float* ax, float* ay, float* az) {
          *   z/10 ~ 0.98 level), so 1.0, not 0 (0 reads as a dive). */
         *ax = 0.0f;
         *ay = -g_wraw.vec[0];
-        *az = 1.0f + g_wraw.vec[1];
+        *az = -g_wraw.vec[1];
     } else {
         *ax = *ay = 0.0f;
-        *az = 1.0f;
+        *az = 0.0f;
     }
 }
 
