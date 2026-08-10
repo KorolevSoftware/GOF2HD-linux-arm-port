@@ -66,9 +66,10 @@ cd /root/gof2hd/port
 bash /root/gof2hd/port/tools/start-game.sh
 ```
 
-Скрипт ставит окружение: `SDL_AUDIODRIVER=dummy`,
-`LD_LIBRARY_PATH=.:/usr/lib32`, `GOF_SHOW_CURSOR=1`. Видеодрайвер SDL2
-выбирает сам (без `SDL_VIDEODRIVER`).
+Скрипт ставит окружение: `SDL_AUDIODRIVER=alsa`,
+`LD_LIBRARY_PATH=.:/usr/lib32`, `GOF_SHOW_CURSOR=1` и необходимые
+FMOD-совместимости (POSIX filesystem, pthread, CPU и math ABI bridge).
+Видеодрайвер SDL2 выбирает сам (без `SDL_VIDEODRIVER`).
 
 Настройки через окружение (см. таблицу переменных ниже):
 `GOF_ROOT`, `GOF_LOG`. Лог — `<GOF_ROOT>/run.txt`
@@ -79,7 +80,7 @@ bash /root/gof2hd/port/tools/start-game.sh
 ```bash
 cd /root/gof2hd/port/run-native
 
-export SDL_AUDIODRIVER=dummy
+export SDL_AUDIODRIVER=alsa
 export GOF_SHOW_CURSOR=1
 export LD_LIBRARY_PATH=/root/gof2hd/port/run-native:/usr/lib32
 

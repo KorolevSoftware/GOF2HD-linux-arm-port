@@ -1,11 +1,12 @@
 /*
- * libm.c — bionic libm shim for GOF2HD on hardfp ARM.
+ * libm.c — bionic libm shim for GOF2HD and Android FMOD on hardfp ARM.
  *
  * The engine (softfp/pcs aapcs, floats in r0-r3) imports math symbols from
  * libm.so: acosf atanf cosf powf rint sinf sqrtf ...  glibc libm is hardfp
  * (aapcs-vfp): floats in s0-s15.  Each export here is a pcs("aapcs") softfp
  * entry that forwards through a pcs("aapcs-vfp") pointer resolved with
- * dlsym() from glibc libm.
+ * dlsym() from glibc libm.  It is preloaded so FMOD's unversioned imports use
+ * the same bridge rather than binding directly to hardfp glibc.
  *
  * Build (hardfp): arm-linux-gnueabihf-gcc -mfloat-abi=hard
  *   -shared -fPIC libm.c -o libm.so
