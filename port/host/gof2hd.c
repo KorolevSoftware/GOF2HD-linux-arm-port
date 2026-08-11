@@ -15,20 +15,20 @@
  * Usage: gof2hd <apk> <obb> <dataDir>
  */
 #define _GNU_SOURCE
+#include "host_config.h"
+#include "config.h"
+#include "engine_bridge.h"
+#include "touch_fifo.h"
 #include "jni.h"
 #include "wrap_overlay.h"
 #include <SDL2/SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <dlfcn.h>
 #include <unistd.h>
 #include <time.h>
 #include <signal.h>
 #include <execinfo.h>
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <errno.h>
 
 /* ---- crash handler ---- */
 /* Print the load addresses of our .so's so pc/lr offsets can be computed
@@ -119,45 +119,8 @@ static void install_dump_handler(void) {
     sigaction(SIGUSR1, &sa, NULL);
 }
 
-/* ---- engine entry points (resolved via dlsym) ---- */
-static jint (*p_JNI_OnLoad)(JavaVM_* vm);
-static void (*p_setZIPPath)(JNIEnv*, jclass, jstring);
-static void (*p_SetDirectories)(JNIEnv*, jclass, jstring, jstring);
-static void (*p_setAPKPath)(JNIEnv*, jclass, jstring);
-static void (*p_setEnvironmentVariables)(JNIEnv*, jclass, jobject);
-static void (*p_setCountryCodeOfDevice)(JNIEnv*, jclass, jint);
-static void (*p_initialize)(JNIEnv*, jclass, jint, jint);
-static void (*p_resize)(JNIEnv*, jclass, jint, jint);
-static void (*p_renderstep)(JNIEnv*, jclass, jlong);
-static jint (*p_getExitFlag)(JNIEnv*, jclass);
-static jint (*p_getLogoShown)(JNIEnv*, jclass);
-static jint (*p_isInMainMenu)(JNIEnv*, jclass);
-static jint (*p_getScreenshotFlag)(JNIEnv*, jclass);
-static void (*p_resetScreenshotFlag)(JNIEnv*, jclass);
-static void (*p_handleTouchEvent)(JNIEnv*, jclass, jint, jint, jint, jint);
-/*
- * Engine is softfp (bionic armeabi-v7a): floats live in r0-r3.  Our host is
- * hardfp (aapcs-vfp), so a plain function pointer would pass the jfloat args
- * in s0-s2 and the engine would read garbage from r0-r3.  Mark the pointer
- * pcs("aapcs") so the floats are placed in integer registers at the call.
- */
-static void (__attribute__((pcs("aapcs"))) *p_handleAccelerometer)(JNIEnv*, jclass, jfloat, jfloat, jfloat);
-static void (*p_setOrigamiSuperClub)(JNIEnv*, jclass, jstring);
-static void (*p_backbutton_fn)(JNIEnv*, jclass);
-
-static int g_width = 640;
-static int g_height = 480;
-
-static jclass tojni_class(void) {
-    static fake_jclass c = { "net/fishlabs/gof2hdallandroid2012/ToJNI" };
-    return (jclass)&c;
-}
-
-static void* resolve_required(void* h, const char* name) {
-    void* p = dlsym(h, name);
-    if (!p) { fprintf(stderr, "[host] missing symbol %s: %s\n", name, dlerror()); exit(1); }
-    return p;
-}
+static int g_width;
+static int g_height;
 
 static long now_ms(void) {
     struct timespec ts;
@@ -175,7 +138,7 @@ static SDL_Window* g_win = NULL;
 static SDL_GameController* g_pad = NULL;
 
 static float gyro_axis(int v) {
-    const int dz = 4000;
+    const int dz = GOF_AXIS_DEADZONE;
     if (abs(v) <= dz) return 0.0f;
     float n = (float)(v > 0 ? v - dz : v + dz) / (32767 - dz);
     if (n > 1.0f) n = 1.0f; else if (n < -1.0f) n = -1.0f;
@@ -194,7 +157,7 @@ static void add_dev_mapping(void) {
     for (int i = 0; i < n; i++) {
         const char* nm = SDL_JoystickNameForIndex(i);
         if (!nm) continue;
-        if (!strstr(nm, "ANBERNIC")) continue;
+        if (!strstr(nm, GOF_GAMEPAD_NAME)) continue;
         SDL_JoystickGUID g = SDL_JoystickGetDeviceGUID(i);
         char guid[64];
         SDL_JoystickGetGUIDString(g, guid, sizeof(guid));
@@ -217,7 +180,7 @@ static SDL_GameController* find_pad(void) {
     int n = SDL_NumJoysticks();
     for (int i = 0; i < n; i++) {
         const char* nm = SDL_JoystickNameForIndex(i);
-        if (nm && strstr(nm, "ANBERNIC")) {
+        if (nm && strstr(nm, GOF_GAMEPAD_NAME)) {
             SDL_GameController* c = SDL_GameControllerOpen(i);
             if (c) fprintf(stderr, "[pad] opened %s (idx %d)\n", nm, i);
             return c;
@@ -249,35 +212,6 @@ static void handle_btn(int ctrl_btn, int down) {
     }
 }
 
-/* ---- mouse -> touch bridge (host side viewer writes /tmp/gof2hd_touch) ---- */
-#define TOUCH_FIFO "/tmp/gof2hd_touch"
-
-static int g_touch_fd = -1;
-
-static void open_touch_fifo(void) {
-    mkfifo(TOUCH_FIFO, 0644);
-    g_touch_fd = open(TOUCH_FIFO, O_RDONLY | O_NONBLOCK);
-    if (g_touch_fd < 0)
-        fprintf(stderr, "[host] touch fifo open failed: %s\n", strerror(errno));
-}
-
-static void pump_touch(JNIEnv* env, jclass cls) {
-    if (g_touch_fd < 0) return;
-    static char buf[4096];
-    ssize_t n = read(g_touch_fd, buf, sizeof(buf) - 1);
-    if (n <= 0) return;
-    buf[n] = 0;
-    char* save = NULL;
-    for (char* line = strtok_r(buf, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
-        int pid = 722, action = 0, x = 0, y = 0;
-        if (sscanf(line, "%d %d %d %d", &pid, &action, &x, &y) >= 4) {
-            if (getenv("GOF_VERBOSE_JNI"))
-                fprintf(stderr, "[host] touch pid=%d act=%d x=%d y=%d\n", pid, action, x, y);
-            p_handleTouchEvent(env, cls, pid, action, x, y);
-        }
-    }
-}
-
 /* Feed the wrapper the combined input vector once per frame: normalized
  * left stick (deadzone ~4000) + D-pad hold flags (D-pad doubles as a
  * second stick — useful on consoles without analog sticks). */
@@ -302,30 +236,8 @@ static void pump_input_vector(void) {
      * wrapper (WRAW_BTN_R2, touch pid 723). */
     if (g_pad) {
         SDL_Joystick* j = SDL_GameControllerGetJoystick(g_pad);
-        if (j) overlay_input_button(WRAW_BTN_R2, SDL_JoystickGetButton(j, 11));
-    }
-}
-
-/* Delivery of the formed input events to the engine (JNI side).  The full
- * per-frame formation (cursor/gyro state, button edges, tap/swipe/fire
- * touches) happens in wrap_overlay (overlay_pump); this callback only
- * translates WrawInputEvent into the engine's JNI entry points. */
-static jclass g_cls;
-
-static void engine_input_send(const WrawInputEvent* ev) {
-    switch (ev->kind) {
-    case WRAW_EV_ACCEL:
-        if (p_handleAccelerometer)
-            p_handleAccelerometer(&g_env, g_cls,
-                                  ev->u.accel.x, ev->u.accel.y, ev->u.accel.z);
-        break;
-    case WRAW_EV_TOUCH:
-        p_handleTouchEvent(&g_env, g_cls, ev->u.touch.pid, ev->u.touch.action,
-                           ev->u.touch.x, ev->u.touch.y);
-        break;
-    case WRAW_EV_BACK:
-        if (p_backbutton_fn) p_backbutton_fn(&g_env, g_cls);
-        break;
+        if (j) overlay_input_button(WRAW_BTN_R2,
+                                    SDL_JoystickGetButton(j, GOF_R2_RAW_BUTTON));
     }
 }
 
@@ -390,6 +302,11 @@ static int sdl_video_init(void) {
         return -1;
     }
     SDL_GetWindowSize(g_win, &g_width, &g_height);
+    if (g_width <= 0 || g_height <= 0) {
+        fprintf(stderr, "[host] SDL returned invalid window size %dx%d\n",
+                g_width, g_height);
+        return -1;
+    }
     g_display_width = g_width;
     g_display_height = g_height;
     SDL_GLContext gl = SDL_GL_CreateContext(g_win);
@@ -426,81 +343,27 @@ static void sdl_swap(void) {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 4) {
-        fprintf(stderr,
-            "usage: %s <base.apk> <main.*.obb> <dataDir>\n", argv[0]);
+    HostConfig config = config_parse(argc, argv);
+    if (!config.valid) {
+        config_print_usage(&config);
         return 2;
     }
-    const char* apk_path = argv[1];
-    const char* obb_path = argv[2];
-    const char* data_dir = argv[3];
-    if (getenv("GOF_VERBOSE_JNI")) g_jni_verbose = 1;
+    if (config.verbose_jni) g_jni_verbose = 1;
     setbuf(stdout, NULL);
     setbuf(stderr, NULL);
-    if (!getenv("GOF_GDB")) install_crash_handler();
+    if (!config.disable_crash_handler) install_crash_handler();
     install_dump_handler();
 
-    /* load engine libs (LD_LIBRARY_PATH must point to our shim dir) */
-    /* ensure libgcc_s + libstdc++ are loaded: provide __aeabi_/_Unwind_/__cxa_ helpers */
-    if (!dlopen("libgcc_s.so.1", RTLD_NOW | RTLD_GLOBAL))
-        fprintf(stderr, "[host] warn: libgcc_s: %s\n", dlerror());
-    if (!dlopen("libstdc++.so.6", RTLD_NOW | RTLD_GLOBAL))
-        fprintf(stderr, "[host] warn: libstdc++: %s\n", dlerror());
-    if (!dlopen("libfmodex.so", RTLD_NOW | RTLD_GLOBAL))
-        fprintf(stderr, "[host] warn: libfmodex: %s\n", dlerror());
-    if (!dlopen("libfmodevent.so", RTLD_NOW | RTLD_GLOBAL))
-        fprintf(stderr, "[host] warn: libfmodevent: %s\n", dlerror());
-    void* h = dlopen("libgof2hdaa.so", RTLD_NOW | RTLD_GLOBAL);
-    if (!h) { fprintf(stderr, "[host] cannot load libgof2hdaa.so: %s\n", dlerror()); return 1; }
+    EngineBridge engine;
+    TouchFifo touch_fifo;
 
-#define SYM(var, n) var = (typeof(var))resolve_required(h, n)
-    SYM(p_JNI_OnLoad, "JNI_OnLoad");
-    SYM(p_setZIPPath, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_setZIPPath");
-    SYM(p_SetDirectories, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_SetDirectories");
-    SYM(p_setAPKPath, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_setAPKPath");
-    SYM(p_setEnvironmentVariables, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_setEnvironmentVariables");
-    SYM(p_setCountryCodeOfDevice, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_setCountryCodeOfDevice");
-    SYM(p_initialize, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_initialize");
-    SYM(p_resize, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_resize");
-    SYM(p_renderstep, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_renderstep");
-    SYM(p_getExitFlag, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_getExitFlag");
-    SYM(p_getLogoShown, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_getLogoShown");
-    SYM(p_isInMainMenu, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_isInMainMenu");
-    SYM(p_getScreenshotFlag, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_getScreenshotFlag");
-    SYM(p_resetScreenshotFlag, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_resetScreenshotFlag");
-    SYM(p_handleTouchEvent, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_handleTouchEvent");
-    SYM(p_handleAccelerometer, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_handleAccelerometer");
-    p_backbutton_fn = (typeof(p_backbutton_fn))
-        dlsym(h, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_BackButtonPressed");
-    p_setOrigamiSuperClub = (typeof(p_setOrigamiSuperClub))
-        dlsym(h, "Java_net_fishlabs_gof2hdallandroid2012_GOF2HD2012_SetOrigamiSuperClub");
-#undef SYM
-
-    JNIEnv* env = &g_env;
-    jclass cls = tojni_class();
-    jstring apk = (jstring)mk_jstring(apk_path);
-    jstring obb = (jstring)mk_jstring(obb_path);
-    jstring data = (jstring)mk_jstring(data_dir);
-
-    printf("[host] JNI_OnLoad...\n");
-    if (p_JNI_OnLoad(&g_vm) != 0) fprintf(stderr, "[host] warn: JNI_OnLoad != 0\n");
-    printf("[host] setZIPPath(%s)\n", obb_path);
-    p_setZIPPath(env, cls, obb);
-    printf("[host] SetDirectories(%s, obbdir)\n", data_dir);
-    p_SetDirectories(env, cls, data, obb);
-    printf("[host] setAPKPath(%s)\n", apk_path);
-    p_setAPKPath(env, cls, apk);
-    printf("[host] setEnvironmentVariables(context)\n");
-    static int fake_context;
-    p_setEnvironmentVariables(env, cls, (jobject)&fake_context);
-    printf("[host] setCountryCodeOfDevice(0)\n");
-    p_setCountryCodeOfDevice(env, cls, 0);
-    if (getenv("GOF_GYRO")) overlay_set_mode(WRAW_MODE_GYRO);
-    if (p_setOrigamiSuperClub) {
-        static char origami[] = "0123456789ABCDEF0123456789ABCDEF";
-        printf("[host] setOrigamiSuperClub(...)\n");
-        p_setOrigamiSuperClub(env, cls, (jstring)mk_jstring(origami));
-    }
+    if (engine_bridge_load(&engine) != 0)
+        return 1;
+    if (engine_bridge_configure(&engine, config.apk_path, config.obb_path,
+                                config.data_dir) != 0)
+        return 1;
+    if (config.gyro_mode)
+        overlay_set_mode(WRAW_MODE_GYRO);
 
     printf("[host] init SDL/EGL...\n");
     if (sdl_video_init() != 0)
@@ -509,13 +372,9 @@ int main(int argc, char** argv) {
     if (overlay_enabled() && !overlay_init(g_width, g_height)) {
         fprintf(stderr, "[host] overlay init failed, cursor disabled\n");
     }
-    g_cls = cls;
-    overlay_set_send(engine_input_send, g_width, g_height);
-
-    printf("[host] initialize(%d, %d)\n", g_width, g_height);
-    p_initialize(env, cls, g_width, g_height);
-    printf("[host] resize(%d, %d)\n", g_width, g_height);
-    p_resize(env, cls, g_width, g_height);
+    overlay_set_send(engine_bridge_send_input, g_width, g_height);
+    if (engine_bridge_initialize(&engine, g_width, g_height) != 0)
+        return 1;
 
     add_dev_mapping();
     g_pad = find_pad();
@@ -525,25 +384,28 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[pad] no gamepad found\n");
 
     printf("[host] render loop started\n");
-    open_touch_fifo();
+    touch_fifo_open(&touch_fifo);
     int frames = 0;
     while (1) {
         long t0 = now_ms();
-        pump_touch(env, cls);
+        touch_fifo_pump(&touch_fifo, engine_bridge_send_touch, &engine);
         pump_sdl_input();
         pump_input_vector();
         overlay_pump();
-        p_renderstep(env, cls, t0);
+        engine_bridge_render(&engine, t0);
         sdl_swap();
         frames++;
         if (frames % 120 == 0)
             printf("[host] %d frames; logo=%d menu=%d exit=%d\n",
-                   frames, p_getLogoShown(env, cls),
-                   p_isInMainMenu(env, cls), p_getExitFlag(env, cls));
-        if (p_getExitFlag(env, cls) == -1) break;
+                   frames, engine_bridge_logo_shown(&engine),
+                   engine_bridge_in_main_menu(&engine),
+                   engine_bridge_exit_flag(&engine));
+        if (engine_bridge_exit_flag(&engine) == -1) break;
         long el = now_ms() - t0;
-        if (el < 33) usleep((33 - el) * 1000);
+        if (el < GOF_FRAME_PERIOD_MS)
+            usleep((GOF_FRAME_PERIOD_MS - el) * 1000);
     }
+    touch_fifo_close(&touch_fifo);
     printf("[host] exit requested\n");
     return 0;
 }

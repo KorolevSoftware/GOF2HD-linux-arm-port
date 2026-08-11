@@ -222,7 +222,11 @@ export GOF_SHOW_CURSOR=1
 
 | Компонент | Файл | Роль |
 |---|---|---|
-| host | `host/gof2hd.c` | SDL2-окно/EGL + геймпад-ввод (бэкенд: deadzone/нормализация, стик+крестовина → вектор) + фейковая виртуальная JVM-обёртка |
+| host | `host/gof2hd.c` | SDL2-окно/EGL + геймпад-ввод (бэкенд: deadzone/нормализация, стик+крестовина → вектор) + frame loop |
+| config | `host/config.c/.h` | разбор CLI и host env в единую `HostConfig` |
+| host config | `host/host_config.h` | host/device-константы: deadzone, raw R2, FIFO, env и frame period |
+| engine bridge | `host/engine_bridge.c/.h` | dlopen/dlsym, ABI-типизированные JNI-вызовы и передача input в движок |
+| touch FIFO | `host/touch_fifo.c/.h` | внешний debug touch input, буферизация неполных строк |
 | GL-оверлей + состояние ввода | `host/wrap_overlay.c/.h` | курсор-прицел в GL-кадре перед свапом + `WrawState` (режим курсор/гиро, курсор, кнопки, вектор ввода), геттеры для движка; линкуется с `libGLESv2.so` (`pcs("aapcs")`-прототипы) |
 | JNI-эмуляция | `host/jni.c`, `host/jni.h` | Фейк JavaVM/Jobject/jstring |
 | libc shim | `shim/shim.c`, `abi.c`, `sscanf.c` | bionic-символы `@LIBC` → glibc |
