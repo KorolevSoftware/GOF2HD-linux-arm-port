@@ -169,8 +169,6 @@ static long now_ms(void) {
  * The on-screen cursor / accelerometer state itself lives in wrap_overlay
  * (WrawState); gof2hd.c only feeds it: normalized stick + D-pad flags. */
 static int g_dpad[4];              /* up / down / left / right hold flags */
-static int g_prev_a, g_prev_x, g_prev_b;  /* engine touch/back edges */
-static int g_prev_cx, g_prev_cy;   /* last touch point sent to the engine */
 
 /* ---- gamepad: SDL2 joystick subsystem sees our uinput device ---- */
 static SDL_Window* g_win = NULL;
@@ -308,55 +306,30 @@ static void pump_input_vector(void) {
     }
 }
 
-/* Drive the engine from the wrapper state: accelerometer each frame, and
- * touch/back on button edges (the wrapper only stores held states). */
-static void pump_engine_input(JNIEnv* env, jclass cls) {
-    if (p_handleAccelerometer) {
-        float ax, ay, az;
-        overlay_get_gyro(&ax, &ay, &az);
-        p_handleAccelerometer(env, cls, ax, ay, az);
-    }
+/* Delivery of the formed input events to the engine (JNI side).  The full
+ * per-frame formation (cursor/gyro state, button edges, tap/swipe/fire
+ * touches) happens in wrap_overlay (overlay_pump); this callback only
+ * translates WrawInputEvent into the engine's JNI entry points. */
+static jclass g_cls;
 
-    int cx, cy;
-    overlay_get_cursor(&cx, &cy);
-    int a = overlay_get_btn(WRAW_BTN_A);
-    if (a && !g_prev_a) {
-        g_prev_cx = cx; g_prev_cy = cy;
-        p_handleTouchEvent(env, cls, 722, 0, cx, cy);
-        fprintf(stderr, "[pad] touch down %d,%d\n", cx, cy);
-    } else if (!a && g_prev_a) {
-        p_handleTouchEvent(env, cls, 722, 1, cx, cy);
-        fprintf(stderr, "[pad] touch up %d,%d\n", cx, cy);
-    } else if (a && (cx != g_prev_cx || cy != g_prev_cy)) {
-        /* drag: while A is held, the held finger follows the cursor as the
-         * stick/D-pad moves it (action 2 = move) */
-        g_prev_cx = cx; g_prev_cy = cy;
-        p_handleTouchEvent(env, cls, 722, 2, cx, cy);
-        if (getenv("GOF_VERBOSE_JNI"))
-            fprintf(stderr, "[pad] touch move %d,%d\n", cx, cy);
+static void engine_input_send(const WrawInputEvent* ev) {
+    switch (ev->kind) {
+    case WRAW_EV_ACCEL:
+        if (p_handleAccelerometer)
+            p_handleAccelerometer(&g_env, g_cls,
+                                  ev->u.accel.x, ev->u.accel.y, ev->u.accel.z);
+        break;
+    case WRAW_EV_TOUCH:
+        p_handleTouchEvent(&g_env, g_cls, ev->u.touch.pid, ev->u.touch.action,
+                           ev->u.touch.x, ev->u.touch.y);
+        break;
+    case WRAW_EV_BACK:
+        if (p_backbutton_fn) p_backbutton_fn(&g_env, g_cls);
+        break;
     }
-    g_prev_a = a;
-
-    int x = overlay_get_btn(WRAW_BTN_R2);
-    if (x && !g_prev_x) {
-        p_handleTouchEvent(env, cls, 723, 0, g_width - g_width / 8, g_height - g_height / 8);
-        fprintf(stderr, "[pad] fire down\n");
-    } else if (!x && g_prev_x) {
-        p_handleTouchEvent(env, cls, 723, 1, g_width - g_width / 8, g_height - g_height / 8);
-        fprintf(stderr, "[pad] fire up\n");
-    }
-    g_prev_x = x;
-
-    int b = overlay_get_btn(WRAW_BTN_B);
-    if (b && !g_prev_b) {
-        fprintf(stderr, "[pad] back\n");
-        if (p_backbutton_fn) p_backbutton_fn(env, cls);
-    }
-    g_prev_b = b;
 }
 
-static void pump_sdl_input(JNIEnv* env, jclass cls) {
-    (void)env; (void)cls;
+static void pump_sdl_input(void) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
         switch (ev.type) {
@@ -566,6 +539,8 @@ int main(int argc, char** argv) {
     if (overlay_enabled() && !overlay_init(g_width, g_height)) {
         fprintf(stderr, "[host] overlay init failed, cursor disabled\n");
     }
+    g_cls = cls;
+    overlay_set_send(engine_input_send, g_width, g_height);
 
     printf("[host] initialize(%d, %d)\n", g_width, g_height);
     p_initialize(env, cls, g_width, g_height);
@@ -585,9 +560,9 @@ int main(int argc, char** argv) {
     while (1) {
         long t0 = now_ms();
         pump_touch(env, cls);
-        pump_sdl_input(env, cls);
+        pump_sdl_input();
         pump_input_vector();
-        pump_engine_input(env, cls);
+        overlay_pump();
         p_renderstep(env, cls, t0);
         sdl_swap();
         frames++;

@@ -80,6 +80,15 @@ typedef struct WrawState {
 
 static WrawState g_wraw;
 
+/* ---- engine delivery ----
+ * gof2hd.c registers the send callback (JNI side).  This module forms the
+ * complete per-frame events here: accel every frame, tap/swipe (pid 722)
+ * and fire (pid 723) on A/R2 edges, back on B edge. */
+static WrawSendFn g_send;
+static int g_fw, g_fh;              /* engine resolution (fire zone base) */
+static int g_prev_a, g_prev_r2, g_prev_b;  /* engine touch/back edges */
+static int g_prev_cx, g_prev_cy;    /* last touch point sent to the engine */
+
 /* ---- GL objects ---- */
 static GLuint   g_prog, g_vbo;
 static GLint    g_uproj, g_ucol, g_a_pos;
@@ -148,8 +157,7 @@ void overlay_get_gyro(float* ax, float* ay, float* az) {
     if (g_wraw.mode == WRAW_MODE_GYRO) {
         /* Engine: SetAccelValue(-a, b, c) == (X, Y, Z).
          *   steer uses accel[1] (Y) = b -> -vector X
-         *   pitch uses accel[2] (Z) = c; neutral Z ~ +1.0 (Android sends
-         *   z/10 ~ 0.98 level), so 1.0, not 0 (0 reads as a dive). */
+         *   pitch uses accel[2] (Z) = c. */
         *ax = 0.0f;
         *ay = -g_wraw.vec[0];
         *az = -g_wraw.vec[1];
@@ -157,6 +165,76 @@ void overlay_get_gyro(float* ax, float* ay, float* az) {
         *ax = *ay = 0.0f;
         *az = 0.0f;
     }
+}
+
+void overlay_set_send(WrawSendFn fn, int width, int height) {
+    g_send = fn;
+    g_fw = width;
+    g_fh = height;
+}
+
+/* Form and emit the per-frame input: accelerometer values each frame, and
+ * touch/back events on button edges (only held states live in WrawState). */
+void overlay_pump(void) {
+    if (!g_send) return;
+    WrawInputEvent ev;
+
+    ev.kind = WRAW_EV_ACCEL;
+    overlay_get_gyro(&ev.u.accel.x, &ev.u.accel.y, &ev.u.accel.z);
+    g_send(&ev);
+
+    int cx, cy;
+    overlay_get_cursor(&cx, &cy);
+    int a = overlay_get_btn(WRAW_BTN_A);
+    if (a && !g_prev_a) {
+        g_prev_cx = cx; g_prev_cy = cy;
+        ev.kind = WRAW_EV_TOUCH;
+        ev.u.touch.pid = 722; ev.u.touch.action = 0;
+        ev.u.touch.x = cx; ev.u.touch.y = cy;
+        g_send(&ev);
+        fprintf(stderr, "[pad] touch down %d,%d\n", cx, cy);
+    } else if (!a && g_prev_a) {
+        ev.kind = WRAW_EV_TOUCH;
+        ev.u.touch.pid = 722; ev.u.touch.action = 1;
+        ev.u.touch.x = cx; ev.u.touch.y = cy;
+        g_send(&ev);
+        fprintf(stderr, "[pad] touch up %d,%d\n", cx, cy);
+    } else if (a && (cx != g_prev_cx || cy != g_prev_cy)) {
+        /* drag: while A is held, the held finger follows the cursor as the
+         * stick/D-pad moves it (action 2 = move) */
+        g_prev_cx = cx; g_prev_cy = cy;
+        ev.kind = WRAW_EV_TOUCH;
+        ev.u.touch.pid = 722; ev.u.touch.action = 2;
+        ev.u.touch.x = cx; ev.u.touch.y = cy;
+        g_send(&ev);
+        if (getenv("GOF_VERBOSE_JNI"))
+            fprintf(stderr, "[pad] touch move %d,%d\n", cx, cy);
+    }
+    g_prev_a = a;
+
+    int r2 = overlay_get_btn(WRAW_BTN_R2);
+    if (r2 && !g_prev_r2) {
+        ev.kind = WRAW_EV_TOUCH;
+        ev.u.touch.pid = 723; ev.u.touch.action = 0;
+        ev.u.touch.x = g_fw - g_fw / 8; ev.u.touch.y = g_fh - g_fh / 8;
+        g_send(&ev);
+        fprintf(stderr, "[pad] fire down\n");
+    } else if (!r2 && g_prev_r2) {
+        ev.kind = WRAW_EV_TOUCH;
+        ev.u.touch.pid = 723; ev.u.touch.action = 1;
+        ev.u.touch.x = g_fw - g_fw / 8; ev.u.touch.y = g_fh - g_fh / 8;
+        g_send(&ev);
+        fprintf(stderr, "[pad] fire up\n");
+    }
+    g_prev_r2 = r2;
+
+    int b = overlay_get_btn(WRAW_BTN_B);
+    if (b && !g_prev_b) {
+        fprintf(stderr, "[pad] back\n");
+        ev.kind = WRAW_EV_BACK;
+        g_send(&ev);
+    }
+    g_prev_b = b;
 }
 
 /* ---- shader + draw ---- */
