@@ -3,7 +3,8 @@
 Порт **Galaxy on Fire 2 HD** (Android ARMv7) на Linux-устройства с ARM-процессором:
 нативный рендер через аппаратный GPU (Mali), без qemu.
 
-- Технический отчёт «как это устроено внутри», ABI-мост, история решений — в [GOF2HD_PORT_NOTES.md](GOF2HD_PORT_NOTES.md)
+- Актуальная архитектура и границы ответственности — в [ARCHITECTURE.md](ARCHITECTURE.md)
+- Технический отчёт «как это устроено внутри» и история ABI/FMOD-диагностики — в [GOF2HD_PORT_NOTES.md](GOF2HD_PORT_NOTES.md)
 
 ## Требования к устройству
 
@@ -44,7 +45,7 @@ cd /root/gof2hd/port
 - собирает shim-библиотеки (`libc/liblog/libandroid/libm/libdl`),
 - мост GLES2 (`gles-stub/gles-bridge.c` → `libGLESv2.so`, форвардит только
   GLES в libmali; движок использует лишь GLES2 и EGL не трогает),
-- звуковые заглушки FMOD (`libfmodex`, `libfmodevent`),
+- реальные FMOD-библиотеки из APK и аудио-хелперы OpenSL/POSIX,
 - хост `gof2hd` (SDL2: `-lSDL2`; модуль оверлея `host/wrap_overlay.c`
   линкуется напрямую с собранным мостом `libGLESv2.so`),
 - патчит `e_flags` у `libgof2hdaa.so`,
@@ -83,6 +84,7 @@ cd /root/gof2hd/port/run-native
 export SDL_AUDIODRIVER=alsa
 export GOF_SHOW_CURSOR=1
 export LD_LIBRARY_PATH=/root/gof2hd/port/run-native:/usr/lib32
+export LD_PRELOAD=/root/gof2hd/port/run-native/libm.so:/root/gof2hd/port/run-native/libfmod_filesystem.so:/root/gof2hd/port/run-native/cpuinfo_fake.so:/root/gof2hd/port/run-native/pthread_bionic.so
 
 ./gof2hd /root/gof2hd/base.apk \
     '/root/gof2hd/obb/net.fishlabs.gof2hdallandroid2012/main.47947006.net.fishlabs.gof2hdallandroid2012.obb' \
@@ -103,10 +105,10 @@ export LD_LIBRARY_PATH=/root/gof2hd/port/run-native:/usr/lib32
 встроенном геймпаде ANBERNIC (`ANBERNIC-keys`, /dev/input/js0).
 
 Состояние ввода (режим курсор/гироскоп, позиция курсора, кнопки, вектор
-ввода) живёт в `wrap_overlay` (`WrawState`); `gof2hd.c` — бэкенд: жмёт
-deadzone/нормализацию, складывает стик с крестовиной в единый вектор
-`[-1,1]` (`pump_input_vector`) и кормит движок из геттеров
-(`pump_engine_input`). Крестовина дублирует стик — пригодится на
+ввода) живёт в `wrap_overlay` (`WrawState`); `gof2hd.c` — SDL-бэкенд:
+применяет deadzone/нормализацию, складывает стик с крестовиной в единый
+вектор `[-1,1]` (`pump_input_vector`), а `overlay_pump` формирует
+виртуальные Android-события. Крестовина дублирует стик — пригодится на
 консолях без аналоговых стиков: в режиме курсора она двигает курсор,
 в режиме гироскопа — рулит кораблём.
 
@@ -118,6 +120,7 @@ deadzone/нормализацию, складывает стик с кресто
 | Крестовина | hat0 | дублирует стик: даёт полное отклонение в сторону нажатия (курсор движется непрерывно, пока удержана) |
 | **A** | `b0` | тап (touch down/up) в позиции курсора |
 | **B** | `b3` | Back (BackButtonPressed — закрыть меню/диалог) |
+| **R2** | `b11` | fire (виртуальный touch pid 723) |
 | **X** | `b2` | зарезервировано |
 | **Y** | `b1` | зарезервировано |
 
@@ -186,7 +189,7 @@ export GOF_SHOW_CURSOR=1
 | `GOF_TRACE` | Трассировать GLES-вызовы |
 | `GOF_LOG` | Путь лога (использует `start-game.sh`) |
 | `GOF_ROOT` | Корень порта на устройстве (через `start-game.sh`) |
-| `SDL_AUDIODRIVER` | Аудиодрайвер (для порта — `dummy`) |
+| `SDL_AUDIODRIVER` | Аудиодрайвер (для порта — `alsa`) |
 | `LD_LIBRARY_PATH` | Должен включать `run-native` и `/usr/lib32` |
 
 ## 6. Диагностика
@@ -225,7 +228,7 @@ export GOF_SHOW_CURSOR=1
 | libc shim | `shim/shim.c`, `abi.c`, `sscanf.c` | bionic-символы `@LIBC` → glibc |
 | libm shim | `shim`/libm.c, `libm.map` | float-math `@LIBC` |
 | GLES bridge | `gles-stub/gles-bridge.c` | мост softfp→hardfp GLES2 в libmali (EGL движок не использует) |
-| fmod stubs | `fmodex-stub/` | заглушки аудио (не используются) |
+| FMOD-хелперы | `fmodex-stub/` | OpenSL→SDL/ALSA, POSIX filesystem, bionic pthread и CPU compatibility |
 | OpenSL фейк | `fmodex-stub/libOpenSLES.c` | PCM-буферы FMOD → SDL2/ALSA (звук) |
 | pthread/cpuinfo | `fmodex-stub/pthread_bionic.c`, `cpuinfo_fake.c` | LD_PRELOAD: bionic pthread→glibc, фейк /proc/cpuinfo |
 | Сборка | `tools/build-native.sh` | всё на устройстве (в т.ч. копирование реальных FMOD из APK) |
