@@ -1,9 +1,13 @@
 # GOF2HD Linux Port — технический отчёт
 
-Дата: 2026-08-07
+Дата: 2026-08-07 - 2026-08-10
 Проект: порт Galaxy on Fire 2 HD (Android, ARMv7, bionic) на Linux ARM-устройства.
 Статус: **работает** — игра запускается и рендерится на аппаратном GPU (Mali)
-через SDL2-окно + ABI-мост softfp→hardfp.
+через SDL2-окно + ABI-мост softfp→hardfp; музыка, эффекты и реплики также
+работают через реальный Android FMOD.
+
+> Актуальная аудиоконфигурация описана в §12.5.4. Разделы §11 и §12.5.1-3
+> сохранены как история диагностики и не описывают текущий runtime.
 
 ## 1. Устройство (эталон)
 
@@ -127,20 +131,21 @@ bash /root/gof2hd/port/tools/start-game.sh
 - Сборка идёт ТОЛЬКО на устройстве (`gcc/g++ arm-linux-gnueabihf`, SDL2 dev
   в системе). `build-native.sh` собирает: shim (libc/liblog/libandroid/libm/libdl),
   GLES+EGL мост (`gles-bridge.c` → `libGLESv2.so`; EGL — SDL находит сам),
-  FMOD-заглушки, хост `gof2hd` (`-lSDL2`; `wrap_overlay.c` линкуется
+  FMOD runtime-библиотеки и compatibility helpers, хост `gof2hd` (`-lSDL2`; `wrap_overlay.c` линкуется
   напрямую с `run-native/libGLESv2.so` по полному пути — НЕ через `-L`,
   чтобы каталог run-native не попал в поиск `-l` и `-ldl` не схватил
   пустой стаб `run-native/libdl.so`), патчит e_flags игры soft→hardfp.
-- `start-game.sh` ставит env: `SDL_AUDIODRIVER=dummy` (видеодрайвер SDL2
-  выбирает сам),
-  `GOF_SHOW_CURSOR=1`, `LD_LIBRARY_PATH=.:/usr/lib32`.
+- `start-game.sh` ставит `SDL_AUDIODRIVER=alsa`, `GOF_SHOW_CURSOR=1`,
+  `LD_LIBRARY_PATH=.:/usr/lib32` и preload-совместимости FMOD: `libm.so`,
+  `libfmod_filesystem.so`, `cpuinfo_fake.so`, `pthread_bionic.so`.
 
 Ручной запуск:
 
 ```sh
 cd /root/gof2hd/port/run-native
-export SDL_AUDIODRIVER=dummy GOF_SHOW_CURSOR=1
+export SDL_AUDIODRIVER=alsa GOF_SHOW_CURSOR=1
 export LD_LIBRARY_PATH=/root/gof2hd/port/run-native:/usr/lib32
+export LD_PRELOAD=/root/gof2hd/port/run-native/libm.so:/root/gof2hd/port/run-native/libfmod_filesystem.so:/root/gof2hd/port/run-native/cpuinfo_fake.so:/root/gof2hd/port/run-native/pthread_bionic.so
 ./gof2hd /root/gof2hd/base.apk \
     '/root/gof2hd/obb/net.fishlabs.gof2hdallandroid2012/main.47947006.net.fishlabs.gof2hdallandroid2012.obb' \
     /root/gof2hd/data
@@ -281,8 +286,9 @@ attr=36, mutexattr=4, condattr=4, sem_t=16, key_t=4, once_t=4.
   `apt-get install -y gdbserver` (Ubuntu 22.04 armhf). Запуск с нужным env:
   ```sh
   cd /root/gof2hd/port/run-native
-  setsid bash -c 'export GOF_FB=/dev/fb0 GOF_SHOW_CURSOR=1 SDL_AUDIODRIVER=dummy \
-    LD_LIBRARY_PATH=.:/usr/lib32; \
+  setsid bash -c 'export GOF_FB=/dev/fb0 GOF_SHOW_CURSOR=1 SDL_AUDIODRIVER=alsa \
+    LD_LIBRARY_PATH=.:/usr/lib32 \
+    LD_PRELOAD=./libm.so:./libfmod_filesystem.so:./cpuinfo_fake.so:./pthread_bionic.so; \
     exec gdbserver 127.0.0.1:2345 ./gof2hd base.apk main.*.obb data' \
     >/root/gof2hd/gdblog.txt 2>&1 </dev/null &
   ```
@@ -309,12 +315,17 @@ attr=36, mutexattr=4, condattr=4, sem_t=16, key_t=4, once_t=4.
 | libc shim | `shim/shim.c`, `abi.c`, `sscanf.c`, `stdio.c` | трансляция `@LIBC`-набора (FILE/stat/pthread), спецсимволы |
 | libm shim | `shim/libm.c`, `libm.map` | float-math `@LIBC` (softfp→hardfp) |
 | GLES bridge | `gles-stub/gles-bridge.c` | softfp→hardfp GLES2 в libmali (EGL движок не использует) |
-| fmod stubs | `fmodex-stub/` | Заглушки аудио FMOD — ВСЕ геттеры возвращают NULL (fake-объекты запрещены, см. §11) |
+| FMOD runtime | реальные `libfmodex.so`/`libfmodevent.so` из APK, `fmodex-stub/` | FMOD 4.44.07, OpenSL→SDL/ALSA, POSIX backend FEV/FSB, bionic pthread/CPU compatibility |
 | Патч версий | `tools/patch-versions.py` | зануляет VERSYM у не-shim импортов движка |
 | Сборка | `tools/build-native.sh` | всё на устройстве |
 | Запуск | `tools/start-game.sh` | одна команда |
 
-## 11. FMOD-аудио: хроника крашей и планируемый фикс диалогов (2026-08-08)
+## 11. FMOD-аудио: архив ранних экспериментов (2026-08-08)
+
+Этот раздел описывает период до подключения реальных FMOD-библиотек и нужен
+только для истории реверса. Fake-объекты, no-op патч `stopAllSoundFXEvents` и
+план искусственной задержки реплик в финальный runtime не входят: настоящие
+события FMOD работают, а диалоги переключаются по их реальному завершению.
 
 ### 11.1. Памятка по структуре FModSound (из Ghidra/дизассемблера)
 
@@ -375,7 +386,7 @@ fault-адрес = r0+0x11. Причина: `play()` с не-NULL объекто
 3. Пересобрано, воспроизведение на станции — **упадков не было**,
    игра стабильна 20+ минут. Диалоги мгновенно проскакивают (см. 11.5).
 
-### 11.5. Открытая задача — диалоги «проскакивают»
+### 11.5. Исторический план для «проскакивающих» диалогов
 
 - Механизм: движок держит реплику, пока у реплики «играет звук»:
   `AESoundRessource::isPlaying(sid)` → `FModSound::isPlaying(sid)` →
@@ -405,7 +416,10 @@ fault-адрес = r0+0x11. Причина: `play()` с не-NULL объекто
   нужные куски вырезать `dd` + `llvm-objcopy -I binary --rename-section` в .text.
 - `md5sum` сверка бинарников ПК↔устройство перед анализом (и патчем).
 
-## 12.5. FMOD-аудио: РАБОТАЕТ (2026-08-09)
+## 12.5. FMOD-аудио: история поиска и финальная конфигурация
+
+> Пункты §12.5-12.5.3 ниже фиксируют промежуточные результаты. Они не являются
+> инструкцией по запуску; финальный рабочий набор приведён в §12.5.4.
 
 Звук заведён: реальные `libfmodex.so`/`libfmodevent.so` (4.44.07) из APK +
 фейковый OpenSL ES + preload-хелперы. Что понадобилось:
@@ -440,14 +454,13 @@ fault-адрес = r0+0x11. Причина: `play()` с не-NULL объекто
    обязателен `extern "C"` (FMOD ссылается на НЕзамангленные имена
    `__cxa_pure_virtual` и т.п.).
 
-`start-game.sh` ставит `LD_PRELOAD="cpuinfo_fake.so:pthread_bionic.so"` и
-`SDL_AUDIODRIVER=alsa`; `build-native.sh` копирует реальные FMOD из `base.apk`
-(патч e_flags) и собирает все хелперы.
+На этой стадии `start-game.sh` ещё содержал только часть конечного preload
+набора. Точный актуальный состав приведён в §12.5.4.
 
 Осталось открытым: переход игры в главное меню иногда затягивается
 (не связано с аудио-инициализацией), прогресс по кампании не проверен.
 
-### 12.5.1. Загрузка FEV-проекта падает (FMOD_ERR=22) — корень: 64-битный off_t
+### 12.5.1. Историческая, отвергнутая гипотеза: 64-битный off_t
 
 Звуковой ВЫХОД работает (logo-звук играет через opensl-fake → SDL → ALSA), но
 полноценное аудио (музыка/эмбиент/голоса) не играет: `FMOD::EventSystem::load`
@@ -476,7 +489,7 @@ fault-адрес = r0+0x11. Причина: `play()` с не-NULL объекто
 Следующему: починить version-патч (разобраться с check_match) ИЛИ найти иной
 способ привязать FTOD-функции FMOD к shim. Версия-патч — правильный путь.
 
-### 12.5.2. РЕШЕНО (2026-08-09): caller-aware прелоад `libfmod_stdio.so`
+### 12.5.2. Исторический промежуточный фикс: `libfmod_stdio.so`
 
 Причина 22 оказалась не в 64-битном off_t (дизасм показал 32-битный ABI):
 FMOD после `fread()` читает bionic `__sFILE._flags` из `FILE+12`
@@ -484,7 +497,7 @@ FMOD после `fread()` читает bionic `__sFILE._flags` из `FILE+12`
 Когда FMOD привязан к glibc, `FILE+12` = `_IO_read_base` (указатель) → мусор
 в битах EOF/ERR → ложный `FMOD_ERR_FILE_EOF(22)` / `FILE_BAD(19)`.
 
-Решение — `port/fmodex-stub/libfmod_stdio.c`, грузится через LD_PRELOAD
+Промежуточным решением был `port/fmodex-stub/libfmod_stdio.c`, загружавшийся через LD_PRELOAD
 (первым в start-game.sh). Перехватывает `fopen/fread/fseek/ftell/fclose` и
 маршрутизирует по вызывающему (адрес возврата, `/proc/self/maps` через
 `open/read` — **не `dladdr`**: dladdr внутри interposed stdio на раннем старте
@@ -496,9 +509,8 @@ FMOD после `fread()` читает bionic `__sFILE._flags` из `FILE+12`
 
 Реализация `resolve_shim`: `dlopen(".../libc.so", RTLD_NOLOAD)` + `dlvsym(...,
 "LIBC")` (никакого повторного dlopen → конструктор shim не перезапускается,
-иначе __sF-пул обнуляется и ломается libzip). Сборка добавлена в
-`build-native.sh`; `start-game.sh` ставит `libfmod_stdio.so` первым в
-`LD_PRELOAD`.
+иначе __sF-пул обнуляется и ломается libzip). Этот временный модуль удалён
+после перехода FMOD на POSIX filesystem callback (§12.5.4).
 
 Проверено: `FMOD::EventSystem::load` → OK, FEV читается через shim, игра
 стабильно рендерит/звучит (логитип→меню, тысячи `[opensl] bq.Enqueue`).
@@ -516,19 +528,43 @@ FMOD после `fread()` читает bionic `__sFILE._flags` из `FILE+12`
 > длительности реплик). После копирования: события создаются, `Event_Start` OK,
 > `Event_GetState` st=0x18 (bit3 PLAYING), музыка/звуки играют.
 
-### 12.5.3. Открытая нестабильность (не связана с этим фиксом)
+### 12.5.3. Историческая нестабильность
 
-Без и с прелоадом иногда наблюдается краш в libzip (`_zip_name_locate`,
+На ранних сборках иногда наблюдался краш в libzip (`_zip_name_locate`,
 разыменование NULL архива) или SIGABRT в libpng (`Assertion 'k > 0'` в
 `src/basic/fileio.c:626`) — следствие смешивания shim (bionic) и glibc FILE в
 разных участках движка. Лечится чистой перезагрузкой консоли и повторным
 запуском (`start-game.sh`).
 
+### 12.5.4. Финальная конфигурация (2026-08-10)
+
+Финальный runtime использует реальные `libfmodex.so`/`libfmodevent.so` 4.44.07
+из APK. `build-native.sh` меняет их ELF e_flags с softfp на hardfp, как и у
+движка. Музыка, эффекты, озвучка и автоматическое завершение реплик подтверждены
+на консоли.
+
+`start-game.sh` запускает SDL с `SDL_AUDIODRIVER=alsa` и загружает:
+
+1. `libm.so` - общий мост softfp→hardfp для игры и FMOD. Его preload не даёт
+   unversioned math-импортам FMOD привязаться к hardfp glibc `libm.so.6`.
+   Критичной оказалась обёртка `double cos(double)`.
+2. `libfmod_filesystem.so` - перехватывает `FMOD_EventSystem_Create` и ставит
+   `FMOD_System_SetFileSystem` с потокобезопасными POSIX callbacks для FEV/FSB.
+   Без этой библиотеки нет музыки, эффектов и голосов.
+3. `cpuinfo_fake.so` - даёт Android FMOD ожидаемые `neon/vfp` признаки CPU.
+4. `pthread_bionic.so` - переводит bionic pthread/sem layout в glibc layout.
+
+`libOpenSLES.so` принимает PCM от FMOD и отдаёт его в `SDL_QueueAudio` → ALSA.
+FSB-банки должны лежать рядом с FEV; launcher копирует их из `data/audio/` в
+`/root/gof2hd/` перед запуском. Изолированный декодер на консоли и Android
+выдал одинаковый результат: `262144` байт PCM, диапазон `[-27401,25528]` и
+`131051` ненулевой сэмпл.
+
 ## 12. TODO / открытое
 
-- [ ] Реализовать план 11.5 (задержка реплик ~3 с) и протестировать на станции.
+- [x] Реальное воспроизведение и автоматическое завершение реплик.
 - [ ] Живой backtrace новой палицы: SIGILL блокирует gdbserver-сессию
       (программа зависает на ld.so при запуске под ptrace); кандидаты —
       core-dump через core_pattern (на устройстве readonly), либо разбор
       самого SIGILL-места в ld.so при трассировке.
-- [ ] Диалоги: проверить клик-вперёд (A/B) при задержке реплики.
+- [x] Диалоги: музыка, голоса и автоматическое завершение реплик работают.
