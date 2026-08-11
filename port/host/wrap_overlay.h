@@ -40,6 +40,37 @@ void overlay_input_button(WrawButton btn, int down);
  * the vector feeds overlay_get_gyro(). */
 void overlay_input_vector(float nx, float ny);
 
+/* ---- engine delivery (formed by this module, sent via a callback) ----
+ * wrap_overlay owns the complete per-frame input formation: cursor/gyro
+ * state, button edges, tap/swipe/fire touch events.  The actual delivery
+ * to the engine (JNI calls: handleTouchEvent/handleAccelerometer/
+ * BackButtonPressed) stays in gof2hd.c behind the registered callback —
+ * this module has no JNI dependency. */
+
+typedef enum WrawEventKind {
+    WRAW_EV_ACCEL,   /* engine accelerometer values (every frame) */
+    WRAW_EV_TOUCH,   /* handleTouchEvent(pid, action, x, y): 722 tap/swipe, 723 fire */
+    WRAW_EV_BACK,    /* BackButtonPressed */
+} WrawEventKind;
+
+typedef struct WrawInputEvent {
+    WrawEventKind kind;
+    union {
+        struct { int pid, action, x, y; } touch;
+        struct { float x, y, z; } accel;
+    } u;
+} WrawInputEvent;
+
+typedef void (*WrawSendFn)(const WrawInputEvent* ev);
+
+/* Register the delivery callback (JNI side, gof2hd.c).  width/height are
+ * the engine resolution used for the fire zone (touch pid 723). */
+void overlay_set_send(WrawSendFn fn, int width, int height);
+
+/* Form and emit the per-frame input events (accel + button edges,
+ * including A-held cursor drags as touch action 2). */
+void overlay_pump(void);
+
 /* ---- state reads used to drive the engine ---- */
 
 /* Current input mode. */
@@ -52,7 +83,7 @@ void overlay_get_cursor(int* x, int* y);
 int overlay_get_btn(WrawButton btn);
 
 /* Engine accelerometer values to pass to handleAccelerometer (ready
- * mapping): gyro mode ax=0, ay=-nx, az=1+ny; otherwise neutral (0,0,1). */
+ * mapping): gyro mode ax=0, ay=-nx, az=-ny; otherwise neutral (0,0,0). */
 void overlay_get_gyro(float* ax, float* ay, float* az);
 
 /* Force the input mode (e.g. GOF_GYRO=1 at startup). */
