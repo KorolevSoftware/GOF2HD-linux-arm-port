@@ -13,6 +13,7 @@ LOG_FILE="${GOF_LOG:-$GOF_ROOT/run.txt}"
 APK="$GOF_ROOT/base.apk"
 OBB=$(ls "$GOF_ROOT"/obb/*/main.*.obb "$GOF_ROOT"/obb/main.*.obb 2>/dev/null | head -1)
 DATA="$GOF_ROOT/data"
+DATA_DIR="${DATA%/}/"
 
 echo "== GOF2HD launcher =="
 
@@ -42,13 +43,13 @@ fi
 # 3) запуск
 echo "[3] запускаю игру"
 cd "$RUN_DIR"
-# FMOD (bionic) ищет FSB-банки рядом с FEV. FEV-путь строится как
-# appRootDir + "FMOD_GOF2.fev" (без слэша) = $GOF_ROOT/dataFMOD_GOF2.fev,
-# поэтому FMOD ищет .fsb в $GOF_ROOT. Скопируем банки туда, если их нет.
-if ls "$GOF_ROOT"/data/audio/*.fsb >/dev/null 2>&1; then
-    for f in "$GOF_ROOT"/data/audio/*.fsb; do
+# Движок склеивает appRootDir и имя FEV напрямую. Завершающий слэш нужен для
+# загрузки data/FMOD_GOF2.fev. FMOD ищет FSB рядом с FEV, поэтому даём ему
+# ссылки на банки из data/audio без дублирования сотен мегабайт аудио-данных.
+if ls "$DATA_DIR"audio/*.fsb >/dev/null 2>&1; then
+    for f in "$DATA_DIR"audio/*.fsb; do
         b=$(basename "$f")
-        [ -f "$GOF_ROOT/$b" ] || cp "$f" "$GOF_ROOT/$b"
+        [ -e "$DATA_DIR$b" ] || [ -L "$DATA_DIR$b" ] || ln -s "audio/$b" "$DATA_DIR$b"
     done
 fi
 export GOF_SHOW_CURSOR=1
@@ -60,7 +61,7 @@ export LD_PRELOAD="$RUN_DIR/libfmod_filesystem.so:$RUN_DIR/cpuinfo_fake.so:$RUN_
 export LD_PRELOAD="$RUN_DIR/libm.so:$LD_PRELOAD"
 export LD_LIBRARY_PATH=.:/usr/lib32
 : > "$LOG_FILE"
-setsid ./gof2hd "$APK" "$OBB" "$DATA" >"$LOG_FILE" 2>&1 </dev/null &
+setsid ./gof2hd "$APK" "$OBB" "$DATA_DIR" >"$LOG_FILE" 2>&1 </dev/null &
 
 sleep 3
 PID=$(pgrep -f '/root/gof2hd/base.apk' || true)

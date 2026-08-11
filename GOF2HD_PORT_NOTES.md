@@ -499,13 +499,12 @@ FMOD после `fread()` читает bionic `__sFILE._flags` из `FILE+12`
 стабильно рендерит/звучит (логитип→меню, тысячи `[opensl] bq.Enqueue`).
 
 > Нюанс пути FEV: `FModSound::init()` строит путь как `appRootDir + "FMOD_GOF2.fev"`
-> (lowMemory=1) — при `appRootDir=/root/gof2hd/data` без слэша получается
-> `/root/gof2hd/dataFMOD_GOF2.fev`. Файл с этим именем должен существовать
-> (либо appRootDir оканчиваться на `/`).
+> (lowMemory=1). `start-game.sh` передаёт `/root/gof2hd/data/` с завершающим
+> слэшем, поэтому загружается штатный `/root/gof2hd/data/FMOD_GOF2.fev`.
 
-> Нюанс FSB-банков: FMOD ищет `.fsb` в каталоге FEV. Раз FEV живёт в
-> `/root/gof2hd/` (см. выше), `*.fsb` должны лежать рядом — `start-game.sh`
-> автоматически копирует их из `/root/gof2hd/data/audio/` в `/root/gof2hd/`.
+> Нюанс FSB-банков: FMOD ищет `.fsb` в каталоге FEV. Поэтому
+> `start-game.sh` создаёт в `/root/gof2hd/data/` символические ссылки на
+> исходные банки из `/root/gof2hd/data/audio/`, не копируя аудио-данные.
 > Без этого `FMOD_EventSystem_GetEventBySystemID(mode=0)` → 23 (FILE_NOTFOUND),
 > события не создаются → «шум в динамиках», диалоги скипаются (движок не знает
 > длительности реплик). После копирования: события создаются, `Event_Start` OK,
@@ -538,8 +537,8 @@ FMOD после `fread()` читает bionic `__sFILE._flags` из `FILE+12`
 4. `pthread_bionic.so` - переводит bionic pthread/sem layout в glibc layout.
 
 `libOpenSLES.so` принимает PCM от FMOD и отдаёт его в `SDL_QueueAudio` → ALSA.
-FSB-банки должны лежать рядом с FEV; launcher копирует их из `data/audio/` в
-`/root/gof2hd/` перед запуском. Изолированный декодер на консоли и Android
+FSB-банки должны разрешаться рядом с FEV; launcher создаёт для них ссылки из
+`data/` в `data/audio/` перед запуском. Изолированный декодер на консоли и Android
 выдал одинаковый результат: `262144` байт PCM, диапазон `[-27401,25528]` и
 `131051` ненулевой сэмпл.
 
