@@ -205,10 +205,10 @@ export GOF_SHOW_CURSOR=1
 - Аудио — **работает**: реальные `libfmodex.so`/`libfmodevent.so` из APK
   (патч e_flags) + фейковый OpenSL ES (`libOpenSLES.c`), который маршрутизирует
   PCM-буферы FMOD в SDL2 → ALSA. Логотип/внутриигровые звуки воспроизводятся.
-- Для аудио нужны LD_PRELOAD: `cpuinfo_fake.so` (FMOD читает /proc/cpuinfo и
-  требует `neon/vfp`) и `pthread_bionic.so` (bionic pthread/sem → glibc).
-  `start-game.sh` ставит их автоматически; `gof2hd` сам вызывает
-  `FMOD_Memory_Initialize` (glibc malloc вместо внутреннего пула FMOD).
+- Для аудио `start-game.sh` автоматически загружает `libm.so`
+  (softfp→hardfp math ABI), `libfmod_filesystem.so` (POSIX FEV/FSB),
+  `cpuinfo_fake.so` (ожидаемые FMOD `neon/vfp`) и `pthread_bionic.so`
+  (bionic pthread/sem → glibc).
 - Ввод — встроенный геймпад через SDL2 (см. раздел 4); маппинг заточен
   под факт устройства консоли.
 - Проверено: логотип (со звуком), стабильный рендер, курсор движется

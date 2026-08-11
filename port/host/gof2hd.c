@@ -425,35 +425,6 @@ static void sdl_swap(void) {
     SDL_GL_SwapWindow(g_win);
 }
 
-/*
- * Override FMOD's internal pool allocator with glibc malloc.  The Android
- * FMOD build uses a tiny internal memory pool; on Linux that pool gets
- * exhausted/corrupted (the game crashes in FMOD_EventSystem_Create with the
- * allocator returning NULL).  FMOD_Memory_Initialize is public API; the
- * callbacks take no float args so softfp/hardfp ABI does not matter.
- */
-typedef void* (*fmod_alloc_fn)(unsigned int, unsigned int, const char*);
-typedef void* (*fmod_realloc_fn)(void*, unsigned int, unsigned int, const char*);
-typedef void  (*fmod_free_fn)(void*, unsigned int, const char*);
-typedef int   (*fmod_meminit_fn)(void*, int, fmod_alloc_fn, fmod_realloc_fn,
-                                 fmod_free_fn, int);
-
-static void* g_fmod_alloc(unsigned int size, unsigned int type, const char* src)
-{ (void)type; (void)src; return malloc(size); }
-static void* g_fmod_realloc(void* p, unsigned int size, unsigned int type, const char* src)
-{ (void)type; (void)src; return realloc(p, size); }
-static void g_fmod_free(void* p, unsigned int type, const char* src)
-{ (void)type; (void)src; free(p); }
-
-static void fmod_memory_override(void) {
-    void* h = dlopen("libfmodex.so", RTLD_NOW | RTLD_GLOBAL);
-    if (!h) { fprintf(stderr, "[host] fmod_memory_override: no libfmodex\n"); return; }
-    fmod_meminit_fn init = (fmod_meminit_fn)dlsym(h, "FMOD_Memory_Initialize");
-    if (!init) { fprintf(stderr, "[host] fmod_memory_override: no FMOD_Memory_Initialize\n"); return; }
-    int r = init(NULL, 0, g_fmod_alloc, g_fmod_realloc, g_fmod_free, 0);
-    fprintf(stderr, "[host] FMOD_Memory_Initialize -> %d (glibc malloc)\n", r);
-}
-
 int main(int argc, char** argv) {
     if (argc < 4) {
         fprintf(stderr,
@@ -479,7 +450,6 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[host] warn: libfmodex: %s\n", dlerror());
     if (!dlopen("libfmodevent.so", RTLD_NOW | RTLD_GLOBAL))
         fprintf(stderr, "[host] warn: libfmodevent: %s\n", dlerror());
-    fmod_memory_override();
     void* h = dlopen("libgof2hdaa.so", RTLD_NOW | RTLD_GLOBAL);
     if (!h) { fprintf(stderr, "[host] cannot load libgof2hdaa.so: %s\n", dlerror()); return 1; }
 
