@@ -204,8 +204,8 @@ static void add_dev_mapping(void) {
         snprintf(map, sizeof(map),
             "%s,%s,"
             "a:b0,b:b3,x:b2,y:b1,"
-            "leftshoulder:b7,rightshoulder:b6,lefttrigger:b5,righttrigger:b4,"
-            "back:b12,start:b9,"
+            "rightshoulder:b6,lefttrigger:b5,righttrigger:b11,"
+            "back:b12,start:b7,"
             "dpup:h0.1,dpright:h0.2,dpdown:h0.4,dpleft:h0.8,"
             "leftx:a0,lefty:a1,rightx:a2,righty:a3,"
             "platform:Linux",
@@ -245,15 +245,7 @@ static void handle_btn(int ctrl_btn, int down) {
     case SDL_CONTROLLER_BUTTON_B:
         overlay_input_button(WRAW_BTN_B, down);
         break;
-    case SDL_CONTROLLER_BUTTON_X:
-        /* Fire: engine reads Hud::firePressed() (bit 4 of Hud+0x284), which
-         * is set by a touch landing in the fire zone (right/bottom of the
-         * screen).  Touch pid 723 (cursor uses 722) so the two fingers
-         * don't collide. */
-        overlay_input_button(WRAW_BTN_X, down);
-        break;
     case SDL_CONTROLLER_BUTTON_START:
-    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
         overlay_input_button(WRAW_BTN_START, down);
         break;
     }
@@ -304,6 +296,16 @@ static void pump_input_vector(void) {
     if (g_dpad[2]) nx = -1.0f;
     if (g_dpad[3]) nx =  1.0f;
     overlay_input_vector(nx, ny);
+
+    /* Fire: R2 (raw joystick button 11 on this console — captured: L1=4,
+     * R2=11; mapping righttrigger:b11).  Polled every frame like the
+     * stick, since the mapping binds a button to the trigger axis and no
+     * gamecontroller button events exist for it.  Held state lives in the
+     * wrapper (WRAW_BTN_R2, touch pid 723). */
+    if (g_pad) {
+        SDL_Joystick* j = SDL_GameControllerGetJoystick(g_pad);
+        if (j) overlay_input_button(WRAW_BTN_R2, SDL_JoystickGetButton(j, 11));
+    }
 }
 
 /* Drive the engine from the wrapper state: accelerometer each frame, and
@@ -335,7 +337,7 @@ static void pump_engine_input(JNIEnv* env, jclass cls) {
     }
     g_prev_a = a;
 
-    int x = overlay_get_btn(WRAW_BTN_X);
+    int x = overlay_get_btn(WRAW_BTN_R2);
     if (x && !g_prev_x) {
         p_handleTouchEvent(env, cls, 723, 0, g_width - g_width / 8, g_height - g_height / 8);
         fprintf(stderr, "[pad] fire down\n");

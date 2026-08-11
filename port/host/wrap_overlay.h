@@ -17,7 +17,7 @@ typedef enum {
 typedef enum {
     WRAW_BTN_A,        /* tap at the cursor position (touch pid 722) */
     WRAW_BTN_B,        /* BackButtonPressed */
-    WRAW_BTN_X,        /* fire (touch pid 723, fixed fire zone) */
+    WRAW_BTN_R2,       /* fire (touch pid 723, fixed fire zone) */
     WRAW_BTN_START,    /* toggle gyro mode */
     WRAW_BTN_COUNT,
 } WrawButton;
