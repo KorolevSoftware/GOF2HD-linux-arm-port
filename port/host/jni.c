@@ -18,8 +18,9 @@ _Static_assert(OFF(CallStaticVoidMethod) == 141 * sizeof(void*), "CallStaticVoid
 _Static_assert(OFF(GetStringUTFChars) == 169 * sizeof(void*), "GetStringUTFChars idx");
 _Static_assert(OFF(ReleaseStringUTFChars) == 170 * sizeof(void*), "ReleaseStringUTFChars idx");
 
-int g_display_width = 640;
-int g_display_height = 480;
+/* Set by the SDL host after the fullscreen window has been created. */
+int g_display_width;
+int g_display_height;
 int g_jni_verbose = 0;
 
 static void jlog(const char* fmt, ...) {
@@ -452,7 +453,6 @@ static jint AttachCurrentThread(JavaVM_* vm, void** penv, void* args) {
     return 0;
 }
 
-static jint DetachCurrentThread(JavaVM_* vm) { (void)vm; return 0; }
 static jint DestroyJavaVM(JavaVM_* vm) { (void)vm; return 0; }
 
 static const JNIInvokeInterface_ g_vm_iface = {

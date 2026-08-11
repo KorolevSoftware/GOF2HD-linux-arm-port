@@ -59,7 +59,9 @@ for path in sys.argv[1:]:
 PYEOF
 
 echo "== building host (SDL2) =="
-"$CC" $CFLAGS -rdynamic -o "$OUT/gof2hd" "$P/host/gof2hd.c" "$P/host/jni.c" "$P/host/wrap_overlay.c" \
+"$CC" $CFLAGS -rdynamic -o "$OUT/gof2hd" "$P/host/gof2hd.c" "$P/host/config.c" \
+    "$P/host/engine_bridge.c" "$P/host/touch_fifo.c" "$P/host/jni.c" \
+    "$P/host/wrap_overlay.c" \
     "$OUT/libGLESv2.so" -L/usr/lib32 -lSDL2main -lSDL2 -ldl -lgcc_s -lm
 
 echo "== adding game engine =="

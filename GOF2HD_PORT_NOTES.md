@@ -8,6 +8,10 @@
 
 > Актуальная аудиоконфигурация описана в §12.5.4. Разделы §11 и §12.5.1-3
 > сохранены как история диагностики и не описывают текущий runtime.
+>
+> Актуальная карта компонентов и границы ответственности находятся в
+> [ARCHITECTURE.md](ARCHITECTURE.md). Этот файл сохраняет технические детали,
+> проверенные ABI-факты и историю поиска проблем.
 
 ## 1. Устройство (эталон)
 
@@ -309,7 +313,11 @@ attr=36, mutexattr=4, condattr=4, sem_t=16, key_t=4, once_t=4.
 
 | Компонент | Файл | Роль |
 |---|---|---|
-| host | `host/gof2hd.c` | SDL2-окно/EGL + геймпад-ввод (бэкенд: deadzone, стик+крестовина → вектор) + движение Java-обёртки |
+| host | `host/gof2hd.c` | SDL2-окно/EGL + геймпад-ввод (бэкенд: deadzone, стик+крестовина → вектор) + frame loop |
+| config | `host/config.c/.h` | разбор CLI и host env в единую `HostConfig` |
+| host config | `host/host_config.h` | host/device-константы: deadzone, raw R2, FIFO и frame period |
+| engine bridge | `host/engine_bridge.c/.h` | dlopen/dlsym, ABI-типизированные JNI-вызовы и передача input в движок |
+| touch FIFO | `host/touch_fifo.c/.h` | внешний debug touch input с буферизацией строк |
 | GL-оверлей + состояние ввода | `port/host/wrap_overlay.c/.h` | `WrawState` (режим курсор/гиро, курсор, кнопки, вектор ввода) + курсор-прицел в GL-кадре перед свапом; линкуется с `libGLESv2.so` (`pcs("aapcs")`-прототипы) |
 | JNI-эмуляция | `host/jni.c`, `jni.h` | Фейковые JavaVM/Jobject/jstring |
 | libc shim | `shim/shim.c`, `abi.c`, `sscanf.c`, `stdio.c` | трансляция `@LIBC`-набора (FILE/stat/pthread), спецсимволы |
