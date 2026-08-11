@@ -267,12 +267,12 @@ static void bq_consume_once(void) {
 static void* bq_thread_fn(void* arg) {
     DLOG("bq pacing thread started");
     for (;;) {
-        /* One completion callback per PCM block.  Calling it every 10 ms for
-         * FMOD's 21.33 ms blocks fills the queue and permanently stalls it. */
+        /* Poll halfway through a PCM block so SDL keeps a small lead.  Waiting
+         * for a whole block lets the ALSA queue drain to zero on this device. */
         unsigned int wait_us = g_sdl_freq > 0 && g_sdl_ch > 0 ?
             (unsigned int)((uint64_t)g_last_size * 1000000u /
-                           ((unsigned)g_sdl_freq * (unsigned)g_sdl_ch * sizeof(int16_t))) : 21333;
-        usleep(wait_us ? wait_us : 21333);
+                           ((unsigned)g_sdl_freq * (unsigned)g_sdl_ch * sizeof(int16_t) * 2u)) : 10666;
+        usleep(wait_us ? wait_us : 10666);
         if (g_bq_callback)
             bq_consume_once();
     }
