@@ -27,6 +27,7 @@
  * textures, no blending, no matrices in the shader itself.
  */
 #include "wrap_overlay.h"
+#include "host_config.h"
 
 #include <SDL2/SDL_opengles2.h>
 #include <stdio.h>
@@ -83,11 +84,22 @@ static WrawState g_wraw;
 /* ---- engine delivery ----
  * gof2hd.c registers the send callback (JNI side).  This module forms the
  * complete per-frame events here: accel every frame, tap/swipe (pid 722)
- * and fire (pid 723) on A/R2 edges, back on B edge. */
+ * and fire (pid 723) on A/R2 edges, directional swipes on L1/R1, and back
+ * on B edge. */
 static WrawSendFn g_send;
 static int g_fw, g_fh;              /* engine resolution (fire zone base) */
-static int g_prev_a, g_prev_r2, g_prev_b;  /* engine touch/back edges */
+static int g_prev_b, g_prev_y, g_prev_l2, g_prev_r2;
 static int g_prev_cx, g_prev_cy;    /* last touch point sent to the engine */
+
+/* A swipe is deliberately spread across frames.  The engine receives the
+ * normal Android-like touch sequence (down, move, move, up), which gives its
+ * gesture recognizer a real displacement and a release edge to consume. */
+enum { SWIPE_IDLE, SWIPE_DOWN, SWIPE_MOVE_MID, SWIPE_MOVE_END, SWIPE_UP };
+static int g_swipe_pending;
+static int g_swipe_phase;
+static int g_swipe_x0, g_swipe_y0, g_swipe_x1, g_swipe_y1;
+enum { SWIPE_LEFT = -1, SWIPE_RIGHT = 1 };
+static int g_swipe_direction;
 
 /* ---- GL objects ---- */
 static GLuint   g_prog, g_vbo;
@@ -118,12 +130,27 @@ int overlay_get_btn(WrawButton btn) {
     return g_wraw.btn[btn];
 }
 
+static void queue_swipe(int direction) {
+    /* Keep the current gesture intact.  A bumper press during the gesture
+     * is ignored rather than interleaving two pointer sequences. */
+    if (g_swipe_pending || g_swipe_phase != SWIPE_IDLE)
+        return;
+    g_swipe_pending = 1;
+    g_swipe_direction = direction;
+}
+
 void overlay_input_button(WrawButton btn, int down) {
     if (btn < 0 || btn >= WRAW_BTN_COUNT) return;
     if (btn == WRAW_BTN_START && down) {
         overlay_set_mode((WrawMode)!g_wraw.mode);
         fprintf(stderr, "[ove] gyro mode %s\n",
                 g_wraw.mode ? "ON (input vector -> accelerometer)" : "OFF");
+    }
+    if (down && !g_wraw.btn[btn]) {
+        if (btn == WRAW_BTN_L1)
+            queue_swipe(SWIPE_LEFT);
+        else if (btn == WRAW_BTN_R1)
+            queue_swipe(SWIPE_RIGHT);
     }
     g_wraw.btn[btn] = down ? 1 : 0;
 }
@@ -151,6 +178,7 @@ void overlay_input_vector(float nx, float ny) {
     if (g_wraw.cy < 0) g_wraw.cy = 0;
     if (g_wraw.cx >= g_wraw.w) g_wraw.cx = g_wraw.w - 1;
     if (g_wraw.cy >= g_wraw.h) g_wraw.cy = g_wraw.h - 1;
+    fprintf(stderr, "[pad] cursor %d,%d\n", g_wraw.cx, g_wraw.cy);
 }
 
 void overlay_get_gyro(float* ax, float* ay, float* az) {
@@ -173,6 +201,79 @@ void overlay_set_send(WrawSendFn fn, int width, int height) {
     g_fh = height;
 }
 
+static int clamp_int(int value, int low, int high) {
+    if (value < low) return low;
+    if (value > high) return high;
+    return value;
+}
+
+static void prepare_swipe(void) {
+    int distance;
+    int max_distance;
+    int cx, cy;
+
+    if (!g_swipe_pending || !g_wraw.w || !g_wraw.h)
+        return;
+
+    overlay_get_cursor(&cx, &cy);
+    max_distance = (g_wraw.w - 1) / 2;
+    distance = g_wraw.w / 4;
+    if (distance < 1) distance = 1;
+    if (distance > max_distance) distance = max_distance;
+
+    cy = clamp_int(cy, 0, g_wraw.h - 1);
+    if (g_swipe_direction == SWIPE_RIGHT) {
+        g_swipe_x0 = clamp_int(cx, 0, g_wraw.w - 1 - distance);
+        g_swipe_x1 = g_swipe_x0 + distance;
+    } else {
+        g_swipe_x0 = clamp_int(cx, distance, g_wraw.w - 1);
+        g_swipe_x1 = g_swipe_x0 - distance;
+    }
+    g_swipe_y0 = cy;
+    g_swipe_y1 = cy;
+    g_swipe_pending = 0;
+    g_swipe_phase = SWIPE_DOWN;
+}
+
+static void pump_swipe(void) {
+    WrawInputEvent ev;
+    int x, y, action;
+
+    prepare_swipe();
+    if (g_swipe_phase == SWIPE_IDLE)
+        return;
+
+    switch (g_swipe_phase) {
+    case SWIPE_DOWN:
+        x = g_swipe_x0; y = g_swipe_y0; action = 0;
+        g_swipe_phase = SWIPE_MOVE_MID;
+        break;
+    case SWIPE_MOVE_MID:
+        x = (g_swipe_x0 + g_swipe_x1) / 2; y = g_swipe_y0; action = 2;
+        g_swipe_phase = SWIPE_MOVE_END;
+        break;
+    case SWIPE_MOVE_END:
+        x = g_swipe_x1; y = g_swipe_y1; action = 2;
+        g_swipe_phase = SWIPE_UP;
+        break;
+    default:
+        x = g_swipe_x1; y = g_swipe_y1; action = 1;
+        g_swipe_phase = SWIPE_IDLE;
+        break;
+    }
+
+    ev.kind = WRAW_EV_TOUCH;
+    ev.u.touch.pid = 722;
+    ev.u.touch.action = action;
+    ev.u.touch.x = x;
+    ev.u.touch.y = y;
+    g_send(&ev);
+    if (getenv("GOF_VERBOSE_JNI"))
+        fprintf(stderr, "[pad] swipe %s act=%d %d,%d\n",
+                g_swipe_direction == SWIPE_RIGHT ? "right" : "left",
+                action, x, y);
+}
+
 /* Form and emit the per-frame input: accelerometer values each frame, and
  * touch/back events on button edges (only held states live in WrawState). */
 void overlay_pump(void) {
@@ -183,37 +284,51 @@ void overlay_pump(void) {
     overlay_get_gyro(&ev.u.accel.x, &ev.u.accel.y, &ev.u.accel.z);
     g_send(&ev);
 
+    pump_swipe();
+
     int cx, cy;
     overlay_get_cursor(&cx, &cy);
-    int a = overlay_get_btn(WRAW_BTN_A);
-    if (a && !g_prev_a) {
-        g_prev_cx = cx; g_prev_cy = cy;
+
+    int l2 = overlay_get_btn(WRAW_BTN_L2);
+    if (l2 && !g_prev_l2) {
         ev.kind = WRAW_EV_TOUCH;
         ev.u.touch.pid = 722; ev.u.touch.action = 0;
-        ev.u.touch.x = cx; ev.u.touch.y = cy;
+        ev.u.touch.x = GOF_L2_CLICK_X; ev.u.touch.y = GOF_L2_CLICK_Y;
         g_send(&ev);
-        fprintf(stderr, "[pad] touch down %d,%d\n", cx, cy);
-    } else if (!a && g_prev_a) {
-        ev.kind = WRAW_EV_TOUCH;
-        ev.u.touch.pid = 722; ev.u.touch.action = 1;
-        ev.u.touch.x = cx; ev.u.touch.y = cy;
+        ev.u.touch.action = 1;
         g_send(&ev);
-        fprintf(stderr, "[pad] touch up %d,%d\n", cx, cy);
-    } else if (a && (cx != g_prev_cx || cy != g_prev_cy)) {
-        /* drag: while A is held, the held finger follows the cursor as the
-         * stick/D-pad moves it (action 2 = move) */
-        g_prev_cx = cx; g_prev_cy = cy;
-        ev.kind = WRAW_EV_TOUCH;
-        ev.u.touch.pid = 722; ev.u.touch.action = 2;
-        ev.u.touch.x = cx; ev.u.touch.y = cy;
-        g_send(&ev);
-        if (getenv("GOF_VERBOSE_JNI"))
-            fprintf(stderr, "[pad] touch move %d,%d\n", cx, cy);
+        fprintf(stderr, "[pad] L2 click %d,%d\n",
+                GOF_L2_CLICK_X, GOF_L2_CLICK_Y);
     }
-    g_prev_a = a;
+    g_prev_l2 = l2;
 
     int r2 = overlay_get_btn(WRAW_BTN_R2);
-    if (r2 && !g_prev_r2) {
+    if (overlay_get_mode() == WRAW_MODE_CURSOR) {
+        /* Cursor mode: R2 is the A-style virtual finger.  A remains mapped
+         * but intentionally has no action until a later binding is chosen. */
+        if (r2 && !g_prev_r2) {
+            g_prev_cx = cx; g_prev_cy = cy;
+            ev.kind = WRAW_EV_TOUCH;
+            ev.u.touch.pid = 722; ev.u.touch.action = 0;
+            ev.u.touch.x = cx; ev.u.touch.y = cy;
+            g_send(&ev);
+            fprintf(stderr, "[pad] R2 touch down %d,%d\n", cx, cy);
+        } else if (!r2 && g_prev_r2) {
+            ev.kind = WRAW_EV_TOUCH;
+            ev.u.touch.pid = 722; ev.u.touch.action = 1;
+            ev.u.touch.x = cx; ev.u.touch.y = cy;
+            g_send(&ev);
+            fprintf(stderr, "[pad] R2 touch up %d,%d\n", cx, cy);
+        } else if (r2 && (cx != g_prev_cx || cy != g_prev_cy)) {
+            g_prev_cx = cx; g_prev_cy = cy;
+            ev.kind = WRAW_EV_TOUCH;
+            ev.u.touch.pid = 722; ev.u.touch.action = 2;
+            ev.u.touch.x = cx; ev.u.touch.y = cy;
+            g_send(&ev);
+            if (getenv("GOF_VERBOSE_JNI"))
+                fprintf(stderr, "[pad] R2 touch move %d,%d\n", cx, cy);
+        }
+    } else if (r2 && !g_prev_r2) {
         ev.kind = WRAW_EV_TOUCH;
         ev.u.touch.pid = 723; ev.u.touch.action = 0;
         ev.u.touch.x = g_fw - g_fw / 8; ev.u.touch.y = g_fh - g_fh / 8;
@@ -230,11 +345,34 @@ void overlay_pump(void) {
 
     int b = overlay_get_btn(WRAW_BTN_B);
     if (b && !g_prev_b) {
-        fprintf(stderr, "[pad] back\n");
-        ev.kind = WRAW_EV_BACK;
+        ev.kind = WRAW_EV_TOUCH;
+        ev.u.touch.pid = 722; ev.u.touch.action = 0;
+        ev.u.touch.x = GOF_B_CLICK_X; ev.u.touch.y = GOF_B_CLICK_Y;
         g_send(&ev);
+        ev.u.touch.action = 1;
+        g_send(&ev);
+        fprintf(stderr, "[pad] B click %d,%d\n",
+                GOF_B_CLICK_X, GOF_B_CLICK_Y);
     }
     g_prev_b = b;
+
+    int y = overlay_get_btn(WRAW_BTN_Y);
+    if (y && !g_prev_y) {
+        ev.kind = WRAW_EV_TOUCH;
+        ev.u.touch.pid = 722; ev.u.touch.action = 0;
+        ev.u.touch.x = GOF_Y_CLICK_X; ev.u.touch.y = GOF_Y_CLICK_Y;
+        g_send(&ev);
+        fprintf(stderr, "[pad] Y down %d,%d\n",
+                GOF_Y_CLICK_X, GOF_Y_CLICK_Y);
+    } else if (!y && g_prev_y) {
+        ev.kind = WRAW_EV_TOUCH;
+        ev.u.touch.pid = 722; ev.u.touch.action = 1;
+        ev.u.touch.x = GOF_Y_CLICK_X; ev.u.touch.y = GOF_Y_CLICK_Y;
+        g_send(&ev);
+        fprintf(stderr, "[pad] Y up %d,%d\n",
+                GOF_Y_CLICK_X, GOF_Y_CLICK_Y);
+    }
+    g_prev_y = y;
 }
 
 /* ---- shader + draw ---- */
@@ -266,6 +404,7 @@ int overlay_init(int width, int height) {
     g_wraw.h = height;
     g_wraw.cx = width / 2;
     g_wraw.cy = height / 2;
+    fprintf(stderr, "[pad] cursor %d,%d\n", g_wraw.cx, g_wraw.cy);
 
     GLuint vs = compile_shader(GL_VERTEX_SHADER, VSH);
     GLuint fs = compile_shader(GL_FRAGMENT_SHADER, FSH);

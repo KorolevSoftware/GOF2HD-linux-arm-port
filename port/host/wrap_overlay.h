@@ -15,10 +15,14 @@ typedef enum {
 /* Logical buttons understood by the wrapper state.  gof2hd.c is the input
  * backend: it maps SDL/raw device events onto these. */
 typedef enum {
-    WRAW_BTN_A,        /* tap at the cursor position (touch pid 722) */
-    WRAW_BTN_B,        /* BackButtonPressed */
+    WRAW_BTN_A,        /* reserved mapping; currently no action */
+    WRAW_BTN_B,        /* fixed click at the configured B position */
+    WRAW_BTN_Y,        /* fixed click at the configured Y position */
+    WRAW_BTN_L2,       /* click at the cursor position (touch pid 722) */
     WRAW_BTN_R2,       /* fire (touch pid 723, fixed fire zone) */
     WRAW_BTN_START,    /* toggle gyro mode */
+    WRAW_BTN_L1,       /* left bumper; wrapper turns its press into a swipe */
+    WRAW_BTN_R1,       /* right bumper; wrapper turns its press into a swipe */
     WRAW_BTN_COUNT,
 } WrawButton;
 
