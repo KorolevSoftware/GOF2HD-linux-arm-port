@@ -38,9 +38,11 @@
 - **Встроенный** геймпад консоли `ANBERNIC-keys` (js0/event1, gpio-keys-polled).
   Виртуальный uinput-геймпад **удалён** из проекта.
 - SDL GameController, маппинг добавляется в `add_dev_mapping()` в `host/gof2hd.c`:
-  `"a:b0,b:b3,x:b2,y:b1,rightshoulder:b6,lefttrigger:b5,righttrigger:b11,
+  `"a:b0,b:b1,x:b3,y:b2,leftshoulder:b4,rightshoulder:b5,
     back:b12,start:b7,dpup:h0.1,dpright:h0.2,dpdown:h0.4,dpleft:h0.8,
-    leftx:a0,lefty:a1,rightx:a2,righty:a3"`
+    leftx:a0,lefty:a1,rightx:a2,righty:a3"`.
+  По legacy-карте `/dev/input/js0`: L2=`b10` (`BTN_SELECT`), R2=`b11`
+  (`BTN_START`); `b13` (`KEY_GOTO`) не обрабатывается как gameplay-кнопка.
 - Hat-значения крестовины (прошивка): UP=1, RIGHT=2, DOWN=4, LEFT=8
   (сдвиг от SDL-стандарта 0/1/2/3 — уже учтено в маппинге).
 - Логика: стик и крестовина складываются в единый нормализованный вектор
@@ -48,8 +50,10 @@
   крестовины; крестовина дублирует стик — консоли без аналоговых стиков),
   вектор кормит `WrawState` в `wrap_overlay.c`. В режиме курсора вектор
   двигает курсор (скорость ∝ отклонению, `overlay_input_vector`),
-  A (`b0`) → touch down/up (pid 722), B (`b3`) → BackButtonPressed, X —
-  fire (pid 723).
+  A (`b0`) → reserved/no action, B (`b1`) → fixed touch down/up at
+  `(35,345)`, Y (`b2`) → fixed touch down/up at `(37,287)`, R2 (`b11`) —
+  fire (pid 723) in gyro mode; in cursor mode R2 (`b11`) uses the A-style
+  cursor touch sequence (pid 722).
 - **Гироскоп-режим** (`WrawState.mode`, тумблер START или env `GOF_GYRO=1`):
   вектор стика+крестовины эмулирует акселерометр
   → `Java_..._ToJNI_handleAccelerometer`. В режиме гироскопа курсор

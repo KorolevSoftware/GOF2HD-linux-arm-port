@@ -147,7 +147,8 @@ static float gyro_axis(int v) {
 
 /* ---- built-in ANBERNIC gamepad ----
  * Empirical mapping from a live capture on the device:
- *   A=b0, B=b3, X=b2, Y=b1, D-pad=hat0, left stick=a0/a1, right stick=a2/a3.
+ *   A=b0, B=b1, X=b3, Y=b2, L1=b4, R1=b5, L2=b10, R2=b11, D-pad=hat0,
+ *   left stick=a0/a1, right stick=a2/a3.
  * The D-pad duplicates the left stick (consoles without analog sticks):
  * both feed the same normalized input vector in wrap_overlay — in cursor
  * mode it moves the on-screen cursor, in gyro mode it drives the
@@ -164,8 +165,8 @@ static void add_dev_mapping(void) {
         char map[512];
         snprintf(map, sizeof(map),
             "%s,%s,"
-            "a:b0,b:b3,x:b2,y:b1,"
-            "rightshoulder:b6,lefttrigger:b5,righttrigger:b11,"
+            "a:b0,b:b1,x:b3,y:b2,"
+            "leftshoulder:b4,rightshoulder:b5,"
             "back:b12,start:b7,"
             "dpup:h0.1,dpright:h0.2,dpdown:h0.4,dpleft:h0.8,"
             "leftx:a0,lefty:a1,rightx:a2,righty:a3,"
@@ -206,8 +207,17 @@ static void handle_btn(int ctrl_btn, int down) {
     case SDL_CONTROLLER_BUTTON_B:
         overlay_input_button(WRAW_BTN_B, down);
         break;
+    case SDL_CONTROLLER_BUTTON_Y:
+        overlay_input_button(WRAW_BTN_Y, down);
+        break;
     case SDL_CONTROLLER_BUTTON_START:
         overlay_input_button(WRAW_BTN_START, down);
+        break;
+    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+        overlay_input_button(WRAW_BTN_L1, down);
+        break;
+    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+        overlay_input_button(WRAW_BTN_R1, down);
         break;
     }
 }
@@ -229,22 +239,39 @@ static void pump_input_vector(void) {
     if (g_dpad[3]) nx =  1.0f;
     overlay_input_vector(nx, ny);
 
-    /* Fire: R2 (raw joystick button 11 on this console — captured: L1=4,
-     * R2=11; mapping righttrigger:b11).  Polled every frame like the
-     * stick, since the mapping binds a button to the trigger axis and no
-     * gamecontroller button events exist for it.  Held state lives in the
-     * wrapper (WRAW_BTN_R2, touch pid 723). */
-    if (g_pad) {
-        SDL_Joystick* j = SDL_GameControllerGetJoystick(g_pad);
-        if (j) overlay_input_button(WRAW_BTN_R2,
-                                    SDL_JoystickGetButton(j, GOF_R2_RAW_BUTTON));
-    }
+}
+
+static void handle_raw_button(int raw_button, int down) {
+    if (raw_button == GOF_B_RAW_BUTTON)
+        overlay_input_button(WRAW_BTN_B, down);
+    else if (raw_button == GOF_Y_RAW_BUTTON)
+        overlay_input_button(WRAW_BTN_Y, down);
+    else if (raw_button == GOF_L2_RAW_BUTTON)
+        overlay_input_button(WRAW_BTN_L2, down);
+    else if (raw_button == GOF_R2_RAW_BUTTON)
+        overlay_input_button(WRAW_BTN_R2, down);
 }
 
 static void pump_sdl_input(void) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
         switch (ev.type) {
+        case SDL_JOYBUTTONDOWN:
+        case SDL_JOYBUTTONUP: {
+            SDL_Joystick* j = g_pad
+                ? SDL_GameControllerGetJoystick(g_pad)
+                : NULL;
+            /* This port has one built-in joystick.  Some older SDL builds
+             * report the device index in which rather than the instance ID;
+             * do not discard its button event on that mismatch. */
+            if (j)
+                fprintf(stderr, "[pad] raw b%d %s\n", ev.jbutton.button,
+                        ev.type == SDL_JOYBUTTONDOWN ? "down" : "up");
+            if (j)
+                handle_raw_button(ev.jbutton.button,
+                                  ev.type == SDL_JOYBUTTONDOWN);
+            break;
+        }
         case SDL_CONTROLLERBUTTONDOWN:
             handle_btn(ev.cbutton.button, 1);
             break;
