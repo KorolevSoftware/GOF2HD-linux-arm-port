@@ -102,7 +102,7 @@ enum { SWIPE_LEFT = -1, SWIPE_RIGHT = 1 };
 static int g_swipe_direction;
 
 /* ---- GL objects ---- */
-static GLuint   g_prog, g_vbo;
+static GLuint   g_prog;
 static GLint    g_uproj, g_ucol, g_a_pos;
 static GLfloat  g_proj[16];
 
@@ -428,8 +428,6 @@ int overlay_init(int width, int height) {
         return 0;
     }
 
-    glGenBuffers(1, &g_vbo);
-
     /* ortho 2D projection: screen top-left origin, x in [0,w], y in [0,h].
      * Column-major as GL wants: x_ndc = 2x/w - 1, y_ndc = 1 - 2y/h. */
     memset(g_proj, 0, sizeof(g_proj));
@@ -473,10 +471,13 @@ void overlay_draw(void) {
     glViewport(0, 0, g_wraw.w, g_wraw.h);
 
     glUseProgram(g_prog);
-    glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_DYNAMIC_DRAW);
+    /* Client-side vertex data: no VBO, no per-frame glBufferData.  A VBO +
+     * glBufferData every frame re-allocates GPU storage each time; on some
+     * mali drivers the old storage is not returned promptly, which makes the
+     * GPU memory grow by a small allocation per frame over a long session. */
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
     glEnableVertexAttribArray(g_a_pos);
-    glVertexAttribPointer(g_a_pos, 2, GL_FLOAT, 0, 0, NULL);
+    glVertexAttribPointer(g_a_pos, 2, GL_FLOAT, 0, 0, verts);
     glUniformMatrix4fv(g_uproj, 1, 0, g_proj);
     glUniform4f(g_ucol, 1.0f, 0.3137f, 0.3137f, 1.0f);
     glDrawArrays(GL_LINES, 0, 12);

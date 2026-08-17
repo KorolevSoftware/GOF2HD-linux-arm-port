@@ -29,6 +29,8 @@
 #include <time.h>
 #include <signal.h>
 #include <execinfo.h>
+#include <pthread.h>
+#include <sys/stat.h>
 
 /* ---- crash handler ---- */
 /* Print the load addresses of our .so's so pc/lr offsets can be computed
@@ -126,6 +128,152 @@ static long now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* ---- watchdog: catch render-loop stall and dump all-thread stacks ----
+ * The engine hangs (memory pressure / GPU OOM / spin) freeze the whole
+ * process; SSH is usually dead by then too.  A dedicated thread inside the
+ * host notices that renderstep stopped returning and runs gcore + gdb on
+ * itself, so the dump lands on disk even while the device looks frozen.
+ * It also watches its own VmRSS every second: a jump of >100MB in 1s is the
+ * GPU-memory spike that precedes the OOM kill, and dumps maps/smaps first. */
+static volatile long g_last_render_ms = 0;
+static volatile int  g_watchdog_armed = 0;
+
+static long read_vmrss_kb(void) {
+    FILE* f = fopen("/proc/self/status", "r");
+    if (!f) return -1;
+    char line[128];
+    long v = -1;
+    while (fgets(line, sizeof(line), f)) {
+        if (sscanf(line, "VmRSS: %ld", &v) == 1) break;
+    }
+    fclose(f);
+    return v;
+}
+
+static void wd_dump(const char* tag) {
+    /* Write maps/status directly from this thread (no fork — fork can fail
+     * under memory pressure).  gdb attach is best-effort via system(). */
+    char base[320];
+    snprintf(base, sizeof(base), "/root/gof2hd/hang_capture/%s_%d", tag, (int)getpid());
+    FILE* out;
+    char line[512];
+
+    /* maps -> base.maps (never overwrite: most important) */
+    {
+        FILE* src = fopen("/proc/self/maps", "r");
+        char fn[360];
+        snprintf(fn, sizeof(fn), "%s.maps", base);
+        out = fopen(fn, "w");
+        if (src && out) {
+            while (fgets(line, sizeof(line), src)) fputs(line, out);
+            fclose(src);
+        }
+        if (out) fclose(out);
+    }
+    /* smaps -> base.smaps (physical pages per mapping — what we diff) */
+    {
+        FILE* src = fopen("/proc/self/smaps", "r");
+        char fn[360];
+        snprintf(fn, sizeof(fn), "%s.smaps", base);
+        out = fopen(fn, "w");
+        if (src && out) {
+            while (fgets(line, sizeof(line), src)) fputs(line, out);
+            fclose(src);
+        }
+        if (out) fclose(out);
+    }
+    /* VBO lifecycle tracker from the GL bridge (driver investigation) */
+    gof_vbo_tracker_dump();
+    /* status -> base.status */
+    {
+        FILE* src = fopen("/proc/self/status", "r");
+        char fn[360];
+        snprintf(fn, sizeof(fn), "%s.status", base);
+        out = fopen(fn, "w");
+        if (src && out) {
+            while (fgets(line, sizeof(line), src))
+                if (!strncmp(line, "Vm", 2) || !strncmp(line, "Threads", 7) ||
+                    !strncmp(line, "Rss", 3))
+                    fputs(line, out);
+            fclose(src);
+        }
+        if (out) fclose(out);
+    }
+    /* gdb all-thread backtrace, best-effort; clear LD_PRELOAD (host preloads
+     * are 32-bit and a 64-bit gdb chokes on them).  Run ASYNC so this thread
+     * is never blocked and always reaches the self-kill below. */
+    {
+        char cmd[512];
+        snprintf(cmd, sizeof(cmd),
+                 "LD_PRELOAD= gdb -p %d -batch -ex 'set pagination off' "
+                 "-ex 'thread apply all bt' > %s.bt 2>&1 &",
+                 (int)getpid(), base);
+        system(cmd);
+    }
+    fprintf(stderr, "[watchdog] dump %s written\n", base);
+    fflush(stderr);
+}
+
+static void* watchdog_fn(void* arg) {
+    (void)arg;
+    mkdir("/root/gof2hd/hang_capture", 0777);
+    long prev_vmrss = -1;
+    long last_baseline = 0;
+    for (;;) {
+        usleep(200000);
+        if (!g_watchdog_armed) continue;
+
+        long v = read_vmrss_kb();
+        long now = now_ms();
+
+        /* keep a rolling "stable-state" smaps (overwrite every 60s) so we can
+         * diff physical pages before vs at the hang */
+        if (now - last_baseline > 60000) {
+            last_baseline = now;
+            FILE* src = fopen("/proc/self/smaps", "r");
+            FILE* dst = fopen("/root/gof2hd/hang_capture/baseline.smaps", "w");
+            if (src && dst) {
+                char line[512];
+                while (fgets(line, sizeof(line), src)) fputs(line, dst);
+                fclose(src);
+            }
+            if (dst) fclose(dst);
+        }
+
+        if (prev_vmrss > 0 && v > 0 && v - prev_vmrss > 60000) {
+            fprintf(stderr, "[watchdog] VmRSS spike +%ldMB -> %ldMB, dumping\n",
+                    (v - prev_vmrss) / 1024, v / 1024);
+            fflush(stderr);
+            wd_dump("spike");
+            prev_vmrss = v;
+            usleep(1000000);
+            continue;
+        }
+        if (v > 0) prev_vmrss = v;
+
+        long last = g_last_render_ms;
+        if (!last) continue;
+        if (now_ms() - last > 6000) {
+            g_watchdog_armed = 0;
+            fprintf(stderr, "[watchdog] render loop stalled (%ld ms ago), dumping...\n",
+                    (long)(now_ms() - last));
+            fflush(stderr);
+            wd_dump("stall");
+            fprintf(stderr, "[watchdog] dump done; terminating self so the device recovers\n");
+            fflush(stderr);
+            usleep(3000000);
+            kill(getpid(), SIGKILL);
+            return NULL;
+        }
+    }
+    return NULL;
+}
+
+static void watchdog_start(void) {
+    pthread_t t;
+    pthread_create(&t, NULL, watchdog_fn, NULL);
 }
 
 /* ---- D-pad hold flags (backend for the wrapper input vector) ----
@@ -334,6 +482,20 @@ static int sdl_video_init(void) {
                 g_width, g_height);
         return -1;
     }
+    /* GOF_DISPLAY=WxH overrides the size reported to the engine.  The engine
+     * picks texture variants and its internal render resolution from this, so
+     * a smaller value can cut GPU memory on low-RAM devices (default fb res). */
+    {
+        const char* env = getenv("GOF_DISPLAY");
+        if (env) {
+            int w = 0, h = 0;
+            if (sscanf(env, "%dx%d", &w, &h) == 2 && w > 0 && h > 0) {
+                g_width = w;
+                g_height = h;
+                fprintf(stderr, "[host] GOF_DISPLAY override: %dx%d\n", w, h);
+            }
+        }
+    }
     g_display_width = g_width;
     g_display_height = g_height;
     SDL_GLContext gl = SDL_GL_CreateContext(g_win);
@@ -369,6 +531,22 @@ static void sdl_swap(void) {
     SDL_GL_SwapWindow(g_win);
 }
 
+/* EXPERIMENT (GOF_GLFINISH=N): call glFinish() every N frames from the host.
+ * Tests whether pending GPU work keeps freed resources physically pinned
+ * (if yes, mali0/VmRSS growth slows).  glFinish is exported by our bridge. */
+__attribute__((pcs("aapcs"))) void glFinish(void);
+void gof_vbo_tracker_dump(void);   /* exported by the GL bridge */
+static void maybe_glfinish(int frames) {
+    static int fin_every = -1;
+    if (fin_every < 0) {
+        const char* e = getenv("GOF_GLFINISH");
+        fin_every = e ? atoi(e) : 0;
+        if (fin_every > 0) fprintf(stderr, "[host] GOF_GLFINISH=%d (periodic glFinish)\n", fin_every);
+    }
+    if (fin_every > 0 && (frames % fin_every) == 0)
+        glFinish();
+}
+
 int main(int argc, char** argv) {
     HostConfig config = config_parse(argc, argv);
     if (!config.valid) {
@@ -380,6 +558,7 @@ int main(int argc, char** argv) {
     setbuf(stderr, NULL);
     if (!config.disable_crash_handler) install_crash_handler();
     install_dump_handler();
+    watchdog_start();
 
     EngineBridge engine;
     TouchFifo touch_fifo;
@@ -413,6 +592,7 @@ int main(int argc, char** argv) {
     printf("[host] render loop started\n");
     touch_fifo_open(&touch_fifo);
     int frames = 0;
+    g_watchdog_armed = 1;
     while (1) {
         long t0 = now_ms();
         touch_fifo_pump(&touch_fifo, engine_bridge_send_touch, &engine);
@@ -422,6 +602,8 @@ int main(int argc, char** argv) {
         engine_bridge_render(&engine, t0);
         sdl_swap();
         frames++;
+        maybe_glfinish(frames);
+        g_last_render_ms = now_ms();
         if (frames % 120 == 0)
             printf("[host] %d frames; logo=%d menu=%d exit=%d\n",
                    frames, engine_bridge_logo_shown(&engine),
