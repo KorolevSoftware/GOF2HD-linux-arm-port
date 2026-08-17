@@ -12,13 +12,6 @@
 
 #define GOF_GAMEPAD_NAME        "ANBERNIC"
 #define GOF_AXIS_DEADZONE       4000
-/* Linux joydev button map for ANBERNIC-keys:
- * b10=BTN_SELECT (the physical L2), b11=BTN_START (the physical R2 on
- * this device).  b13 is KEY_GOTO and is not treated as a gameplay button. */
-#define GOF_L2_RAW_BUTTON       10
-#define GOF_R2_RAW_BUTTON       11
-#define GOF_B_RAW_BUTTON        1
-#define GOF_Y_RAW_BUTTON        2
 #define GOF_L2_CLICK_X          541
 #define GOF_L2_CLICK_Y          446
 #define GOF_B_CLICK_X           35

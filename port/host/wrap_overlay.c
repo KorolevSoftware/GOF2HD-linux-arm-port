@@ -164,8 +164,8 @@ void overlay_input_vector(float nx, float ny) {
     if (!g_wraw.w || !g_wraw.h) return;
 
     /* speed proportional to deflection, fractional accumulator for a
-     * smooth crawl at small deflections (~8 px/frame at full stick) */
-    const float k = 16.0f;
+     * smooth crawl at small deflections (~6.4 px/frame at full stick) */
+    const float k = 12.8f; /* 1.6x base cursor speed */
     g_wraw.rem[0] += nx * k;
     g_wraw.rem[1] += ny * k;
     int dx = (int)g_wraw.rem[0]; g_wraw.rem[0] -= dx;
