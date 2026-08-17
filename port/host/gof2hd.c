@@ -136,6 +136,8 @@ static int g_dpad[4];              /* up / down / left / right hold flags */
 /* ---- gamepad: SDL2 joystick subsystem sees our uinput device ---- */
 static SDL_Window* g_win = NULL;
 static SDL_GameController* g_pad = NULL;
+static int g_trigger_left;
+static int g_trigger_right;
 
 static float gyro_axis(int v) {
     const int dz = GOF_AXIS_DEADZONE;
@@ -145,20 +147,11 @@ static float gyro_axis(int v) {
     return n;
 }
 
-/* ---- built-in ANBERNIC gamepad ----
- * Empirical mapping from a live capture on the device:
- *   A=b0, B=b1, X=b3, Y=b2, L1=b4, R1=b5, L2=b10, R2=b11, D-pad=hat0,
- *   left stick=a0/a1, right stick=a2/a3.
- * The D-pad duplicates the left stick (consoles without analog sticks):
- * both feed the same normalized input vector in wrap_overlay — in cursor
- * mode it moves the on-screen cursor, in gyro mode it drives the
- * accelerometer.  START toggles the mode. */
 static void add_dev_mapping(void) {
     int n = SDL_NumJoysticks();
     for (int i = 0; i < n; i++) {
         const char* nm = SDL_JoystickNameForIndex(i);
-        if (!nm) continue;
-        if (!strstr(nm, GOF_GAMEPAD_NAME)) continue;
+        if (!nm || !strstr(nm, GOF_GAMEPAD_NAME)) continue;
         SDL_JoystickGUID g = SDL_JoystickGetDeviceGUID(i);
         char guid[64];
         SDL_JoystickGetGUIDString(g, guid, sizeof(guid));
@@ -167,13 +160,15 @@ static void add_dev_mapping(void) {
             "%s,%s,"
             "a:b0,b:b1,x:b3,y:b2,"
             "leftshoulder:b4,rightshoulder:b5,"
+            "lefttrigger:b10,righttrigger:b11,"
             "back:b12,start:b7,"
             "dpup:h0.1,dpright:h0.2,dpdown:h0.4,dpleft:h0.8,"
             "leftx:a0,lefty:a1,rightx:a2,righty:a3,"
             "platform:Linux",
             guid, nm);
         if (SDL_GameControllerAddMapping(map) > 0)
-            fprintf(stderr, "[pad] mapped %s (%s)\n", nm, guid);
+            fprintf(stderr, "[pad] added SDL GameController mapping %s (%s)\n",
+                    nm, guid);
     }
 }
 
@@ -183,13 +178,18 @@ static SDL_GameController* find_pad(void) {
         const char* nm = SDL_JoystickNameForIndex(i);
         if (nm && strstr(nm, GOF_GAMEPAD_NAME)) {
             SDL_GameController* c = SDL_GameControllerOpen(i);
-            if (c) fprintf(stderr, "[pad] opened %s (idx %d)\n", nm, i);
+            if (c)
+                fprintf(stderr, "[pad] opened SDL GameController %s (idx %d)\n",
+                        nm, i);
+            else
+                fprintf(stderr, "[pad] cannot open SDL GameController %s: %s\n",
+                        nm, SDL_GetError());
             return c;
         }
     }
     if (n > 0) {
         SDL_GameController* c = SDL_GameControllerOpen(0);
-        if (c) fprintf(stderr, "[pad] opened fallback controller 0\n");
+        if (c) fprintf(stderr, "[pad] opened fallback SDL GameController 0\n");
         return c;
     }
     return NULL;
@@ -197,10 +197,6 @@ static SDL_GameController* find_pad(void) {
 
 static void handle_btn(int ctrl_btn, int down) {
     switch (ctrl_btn) {
-    case SDL_CONTROLLER_BUTTON_DPAD_UP:    g_dpad[0] = down; break;
-    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  g_dpad[1] = down; break;
-    case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  g_dpad[2] = down; break;
-    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: g_dpad[3] = down; break;
     case SDL_CONTROLLER_BUTTON_A:
         overlay_input_button(WRAW_BTN_A, down);
         break;
@@ -219,6 +215,22 @@ static void handle_btn(int ctrl_btn, int down) {
     case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
         overlay_input_button(WRAW_BTN_R1, down);
         break;
+    case SDL_CONTROLLER_BUTTON_DPAD_UP:    g_dpad[0] = down; break;
+    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  g_dpad[1] = down; break;
+    case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  g_dpad[2] = down; break;
+    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: g_dpad[3] = down; break;
+    }
+}
+
+static void handle_axis(int axis, int value) {
+    int down = value > 16000;
+    if (axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT && down != g_trigger_left) {
+        g_trigger_left = down;
+        overlay_input_button(WRAW_BTN_L2, down);
+    } else if (axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT &&
+               down != g_trigger_right) {
+        g_trigger_right = down;
+        overlay_input_button(WRAW_BTN_R2, down);
     }
 }
 
@@ -228,8 +240,10 @@ static void handle_btn(int ctrl_btn, int down) {
 static void pump_input_vector(void) {
     float nx = 0.0f, ny = 0.0f;
     if (g_pad) {
-        nx = gyro_axis(SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTX));
-        ny = gyro_axis(SDL_GameControllerGetAxis(g_pad, SDL_CONTROLLER_AXIS_LEFTY));
+        nx = gyro_axis(SDL_GameControllerGetAxis(g_pad,
+                                                  SDL_CONTROLLER_AXIS_LEFTX));
+        ny = gyro_axis(SDL_GameControllerGetAxis(g_pad,
+                                                  SDL_CONTROLLER_AXIS_LEFTY));
     }
     /* D-pad signs follow the stick convention: up/left = -1 (matching
      * how the stick polarity was verified on the device). */
@@ -241,42 +255,18 @@ static void pump_input_vector(void) {
 
 }
 
-static void handle_raw_button(int raw_button, int down) {
-    if (raw_button == GOF_B_RAW_BUTTON)
-        overlay_input_button(WRAW_BTN_B, down);
-    else if (raw_button == GOF_Y_RAW_BUTTON)
-        overlay_input_button(WRAW_BTN_Y, down);
-    else if (raw_button == GOF_L2_RAW_BUTTON)
-        overlay_input_button(WRAW_BTN_L2, down);
-    else if (raw_button == GOF_R2_RAW_BUTTON)
-        overlay_input_button(WRAW_BTN_R2, down);
-}
-
 static void pump_sdl_input(void) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
         switch (ev.type) {
-        case SDL_JOYBUTTONDOWN:
-        case SDL_JOYBUTTONUP: {
-            SDL_Joystick* j = g_pad
-                ? SDL_GameControllerGetJoystick(g_pad)
-                : NULL;
-            /* This port has one built-in joystick.  Some older SDL builds
-             * report the device index in which rather than the instance ID;
-             * do not discard its button event on that mismatch. */
-            if (j)
-                fprintf(stderr, "[pad] raw b%d %s\n", ev.jbutton.button,
-                        ev.type == SDL_JOYBUTTONDOWN ? "down" : "up");
-            if (j)
-                handle_raw_button(ev.jbutton.button,
-                                  ev.type == SDL_JOYBUTTONDOWN);
-            break;
-        }
         case SDL_CONTROLLERBUTTONDOWN:
             handle_btn(ev.cbutton.button, 1);
             break;
         case SDL_CONTROLLERBUTTONUP:
             handle_btn(ev.cbutton.button, 0);
+            break;
+        case SDL_CONTROLLERAXISMOTION:
+            handle_axis(ev.caxis.axis, ev.caxis.value);
             break;
         case SDL_KEYDOWN:
             if (ev.key.repeat) break;
