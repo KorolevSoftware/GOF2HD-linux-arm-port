@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ARMv7 hardfp build of the GOF2HD port stack, on-device or in Docker.
+# ARMv7 hardfp build inside Docker, invoked by build-docker.sh.
 # Requires: ARMv7 gcc/g++, make, cmake, glibc dev, SDL2 dev.
 # Everything is built hardfp against the build environment's glibc.
 # The target must provide a compatible glibc and ARMv7 SDL2/GLES libraries.

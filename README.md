@@ -2,7 +2,7 @@
 
 Порт **Galaxy on Fire 2 HD** (Android ARMv7) на Linux-устройства с ARM-процессором:
 нативный рендер через аппаратный GPU (Mali), без QEMU во время игры.
-Основной способ сборки — Docker на ПК; на консоль переносится готовый результат.
+Сборка выполняется в Docker на ПК; на консоль переносится готовый результат.
 
 - Актуальная архитектура и границы ответственности — в [ARCHITECTURE.md](ARCHITECTURE.md)
 - Технический отчёт «как это устроено внутри» и история ABI/FMOD-диагностики — в [GOF2HD_PORT_NOTES.md](GOF2HD_PORT_NOTES.md)
@@ -50,7 +50,7 @@ Codex. Явный вызов: `$ponytail`, `$ponytail-review`, `$ponytail-audit`
 плагинной установки, которые здесь не включены. Версия и лицензия —
 в `.agents/PONYTAIL.md` и `.agents/PONYTAIL-LICENSE`.
 
-## 1. Сборка на ПК через Docker (основной способ)
+## 1. Сборка на ПК через Docker
 
 Все команды выполняются из корня проекта на ПК:
 
@@ -61,7 +61,7 @@ bash port/tools/build-docker.sh
 Скрипт создаёт или обновляет локальный образ `gof2hd-build:armhf`, подключает
 проект в `/work` и запускает `build-native.sh` внутри контейнера.
 `Dockerfile` использует Debian Bookworm для **`linux/arm/v7`** с GCC/G++,
-CMake, Make, SDL2 dev, Python3 и unzip. Базовый образ закреплён по SHA256;
+CMake, Make, SDL2 dev и Python3. Базовый образ закреплён по SHA256;
 пакеты устанавливаются из репозиториев Debian при создании образа.
 
 Контейнер остаётся ARMv7 и на x86-64/ARM64 ПК: сборка выполняется под
@@ -137,31 +137,6 @@ docker save gof2hd-build:armhf | gzip > /tmp/gof2hd-build-armhf.tar.gz
 # На другом ПК:
 docker load < /tmp/gof2hd-build-armhf.tar.gz
 ```
-
-### Альтернатива: сборка на устройстве
-
-Если нужно собирать непосредственно на устройстве, положите туда исходники
-(корневой `CMakeLists.txt`, `port/`). Нужны ARMv7 hardfp GCC/G++, glibc dev,
-SDL2 dev, CMake >= 3.18 и Make. Из корня проекта на устройстве:
-
-```sh
-bash port/tools/build-native.sh
-```
-
-Скрипт по умолчанию использует `arm-linux-gnueabihf-gcc/g++` и `/usr/lib32`.
-Для ARMv7 Debian с компиляторами `gcc/g++`:
-
-```sh
-CC=gcc CXX=g++ GOF_SYS_LIB=/usr/lib/arm-linux-gnueabihf bash port/tools/build-native.sh
-```
-
-`GOF_OUT` задаёт каталог результата, `GOF_JOBS` — число
-параллельных задач. `CC`, `CXX`, `CFLAGS` и `GOF_SYS_LIB` задают компиляторы,
-флаги и каталог целевых библиотек. Эти переменные для `build-native.sh`
-задаются на устройстве или вручную через `docker run -e`; Docker-обёртка
-автоматически передаёт только `GOF_JOBS` и `CFLAGS`.
-Не переносите `build/` с ПК на устройство: CMake сохраняет абсолютные пути.
-При смене компилятора также нужен новый каталог `build/`.
 
 ## 2. Пакет порта и оригинальная игра
 
@@ -446,7 +421,7 @@ export GOF_SHOW_CURSOR=1
 | FMOD-хелперы | `fmodex-stub/` | OpenSL→SDL/ALSA, POSIX filesystem, bionic pthread и CPU compatibility |
 | OpenSL фейк | `fmodex-stub/libOpenSLES.c` | PCM-буферы FMOD → SDL2/ALSA (звук) |
 | pthread/cpuinfo | `fmodex-stub/pthread_bionic.c`, `cpuinfo_fake.c` | LD_PRELOAD: bionic pthread→glibc, фейк /proc/cpuinfo |
-| Сборка | `Dockerfile`, `tools/build-docker.sh`, `CMakeLists.txt` | основной путь — Docker на ПК; CMake/GCC и обработка APK через `build-native.sh` |
+| Сборка | `Dockerfile`, `tools/build-docker.sh`, `CMakeLists.txt` | Docker на ПК; CMake/GCC внутри контейнера через `build-native.sh` |
 | Запуск | `tools/start-game.sh` | одна команда |
 | Техотчёт | `GOF2HD_PORT_NOTES.md` | ABI-детали, история решений |
 </content>
