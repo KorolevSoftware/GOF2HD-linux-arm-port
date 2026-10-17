@@ -15,7 +15,7 @@
 
 ## 1. Устройство (эталон)
 
-- **ANBERNIC (стоковая прошивка), root@192.168.0.128, armhf glibc 2.35 + aarch64 kernel.**
+- **ANBERNIC (стоковая прошивка), armhf glibc 2.35 + aarch64 kernel.**
 - Пути: `/root/gof2hd/` (проект), `/root/gof2hd/port/run-native/` (собранное),
   `/root/gof2hd/port_bak/` (бэкап), `/dev/fb0` (framebuffer), `/dev/input/js0` (геймпад).
 - GPU: настоящие EGL/GLES — в `/usr/lib32/libmali.so.0.20.0`. Пустышка
@@ -318,7 +318,7 @@ attr=36, mutexattr=4, condattr=4, sem_t=16, key_t=4, once_t=4.
     exec gdbserver 127.0.0.1:2345 ./gof2hd base.apk main.*.obb data' \
     >/root/gof2hd/gdblog.txt 2>&1 </dev/null &
   ```
-  Туннель с ПК: `ssh -N -L 2345:127.0.0.1:2345 root@192.168.0.128`.
+  Туннель с ПК: `ssh -N -L 2345:127.0.0.1:2345 root@CONSOLE_IP` (подставьте адрес консоли).
   Клиент (ПК, gdb-multiarch — уже стоял на Manjaro):
   `gdb-multiarch -batch -ex 'set solib-search-path <копия run-native>' -ex
   'target remote 127.0.0.1:2345' -ex 'continue' -ex 'bt' ./gof2hd`.
