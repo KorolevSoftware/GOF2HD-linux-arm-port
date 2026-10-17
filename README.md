@@ -1,70 +1,74 @@
-# GOF2HD Linux Port — сборка и установка через PortMaster
+# GOF2HD Linux Port — building and installing via PortMaster
 
-Порт **Galaxy on Fire 2 HD** (Android ARMv7) на Linux-устройства с ARM-процессором:
-нативный рендер через аппаратный GPU (Mali), без QEMU во время игры.
-Сборка выполняется в Docker на ПК; на консоль переносится готовый результат.
+English | [Русский](README.ru.md)
 
-- Актуальная архитектура и границы ответственности — в [ARCHITECTURE.md](ARCHITECTURE.md)
-- Технический отчёт «как это устроено внутри» и история ABI/FMOD-диагностики — в [GOF2HD_PORT_NOTES.md](GOF2HD_PORT_NOTES.md)
+A port of **Galaxy on Fire 2 HD** (Android ARMv7) to ARM Linux devices,
+with native hardware GPU rendering (Mali) and no QEMU during gameplay.
+Build it in Docker on your PC, then copy the resulting package to your handheld.
 
-## Требования
+- Current architecture and component responsibilities: [ARCHITECTURE.md](ARCHITECTURE.md) (Russian)
+- Technical notes and ABI/FMOD debugging history: [GOF2HD_PORT_NOTES.md](GOF2HD_PORT_NOTES.md) (Russian)
 
-Для сборки на ПК:
+## Requirements
 
-- Git и запущенный Docker;
-- поддержка контейнеров `linux/arm/v7`: на x86-64 и ARM64 нужна ARMv7-эмуляция
-  QEMU/binfmt; Docker Desktop включает её по умолчанию, для Docker Engine
-  на Linux её нужно настроить при отсутствии поддержки ([документация Docker](https://docs.docker.com/build/building/multi-platform/#qemu));
-- файлы оригинальной игры для сборки не нужны;
-- доступ к репозиториям образов и пакетов Debian при первом создании образа.
+To build on your PC:
 
-Для запуска на консоли:
+- Git and a running Docker installation;
+- support for `linux/arm/v7` containers: x86-64 and ARM64 hosts need ARMv7
+  emulation through QEMU/binfmt. Docker Desktop includes it by default;
+  with Docker Engine on Linux, configure it if missing
+  ([Docker documentation](https://docs.docker.com/build/building/multi-platform/#qemu));
+- original game files are not required for building;
+- access to container image and Debian package repositories when creating the image for the first time.
 
-- установленный PortMaster;
-- ARM Linux с поддержкой 32-битных ARMv7 hardfp-программ;
-- совместимая **glibc**, 32-битные **SDL2** и **EGL/GLES2** из прошивки;
-  проверенные варианты — Mali/fbdev и ROCKNIX с Mesa/Panfrost/Wayland;
-- свои APK/OBB Android-версии игры (ARMv7);
-- Python 3.9+ для автоматической подготовки при первом запуске (есть на
-  проверенной ROCKNIX); готовую папку можно подготовить на ПК и перенести целиком.
+To run on your handheld:
 
-Docker, компиляторы и заголовки SDL2 на консоли для запуска не требуются.
+- PortMaster;
+- ARM Linux with support for 32-bit ARMv7 hardfp programs;
+- compatible **glibc** and 32-bit **SDL2** and **EGL/GLES2** libraries from the firmware;
+  tested configurations include Mali/fbdev and ROCKNIX with Mesa/Panfrost/Wayland;
+- your own APK/OBB files from the ARMv7 Android version of the game;
+- Python 3.9+ for automatic first-launch preparation (available on the tested ROCKNIX system).
+  You can also prepare the installation on your PC and copy the entire folder to the device.
 
-## 1. Сборка на ПК через Docker
+Docker, compilers and SDL2 development headers are not required on the handheld.
 
-Все команды выполняются из корня проекта на ПК:
+## 1. Build on your PC with Docker
+
+Run all commands from the project root on your PC:
 
 ```sh
 bash port/tools/build-docker.sh
 ```
 
-Скрипт создаёт или обновляет образ `gof2hd-build:armhf` и собирает порт для ARMv7.
-При ошибке `exec format error` проверьте поддержку ARMv7/binfmt в Docker.
+The script creates or updates the `gof2hd-build:armhf` image and builds the port for ARMv7.
+If you get an `exec format error`, check ARMv7/binfmt support in Docker.
 
-### Результат и повторная сборка
+### Build output and rebuilding
 
-Результат сохраняется на ПК в `port/run-native/`: исполняемый файл `gof2hd`
-и библиотеки порта.
+The output is saved to `port/run-native/` on your PC: the `gof2hd` executable
+and the port libraries.
 
-Движок и FMOD из APK не входят в результат сборки. Старые копии, оставшиеся
-в `run-native/` от прежних сборок, автоматически не удаляются; скрипт упаковки
-включает только явно перечисленные файлы самого порта.
+The game engine and FMOD libraries from the APK are not part of the build output.
+Old copies left in `run-native/` by earlier builds are not removed automatically;
+the packaging script includes only an explicit list of port files.
 
-Для следующей сборки повторите ту же команду: пересоберутся только изменённые
-исходники и их зависимости. Ресурсы, сохранения и логи не затрагиваются.
-Для полной пересборки удалите только каталог `port/run-native/build/`.
+To rebuild, run the same command again: only changed source files and their
+dependencies are rebuilt. Game resources, saves and logs are left untouched.
+For a clean rebuild, delete only `port/run-native/build/`.
 
-По умолчанию используются две параллельные задачи. Чтобы изменить их число:
+The default is two parallel build jobs. To change this:
 
 ```sh
 GOF_JOBS=6 bash port/tools/build-docker.sh
 ```
 
-Команда и подробности [проверки сборки](ARCHITECTURE.md#проверка-сборки) — в `ARCHITECTURE.md`.
+See [build verification](ARCHITECTURE.md#проверка-сборки) in `ARCHITECTURE.md` (Russian)
+for the verification command and details.
 
-### Создание пакета PortMaster
+### Create a PortMaster package
 
-После сборки выполните из корня проекта на ПК:
+After building, run this from the project root on your PC:
 
 ```sh
 docker run --rm --platform linux/arm/v7 \
@@ -73,59 +77,58 @@ docker run --rm --platform linux/arm/v7 \
   gof2hd-build:armhf python3 port/tools/package-portmaster.py
 ```
 
-Результат — `dist/gof2hd.zip`, готовый для копирования на карту памяти.
-Пакет содержит только файлы порта; оригинальные APK/OBB и сохранения в него не входят.
+The result is `dist/gof2hd.zip`, ready to copy to your SD card.
+The package contains only port files; original APK/OBB files and saves are not included.
 
-## 2. Установка через PortMaster
+## 2. Install via PortMaster
 
-1. Распакуйте `dist/gof2hd.zip` в каталог `ports/` на карте памяти с играми.
-2. Положите свои `base.apk` и один `main.*.obb` в `gof2hd/original/`.
-   Используйте готовый OBB-файл, без дополнительной упаковки в RAR или ZIP.
-3. Выберите **Galaxy on Fire 2 HD** в меню Ports.
-4. При первом запуске дождитесь автоматической подготовки с прогресс-баром.
-   Она может занять несколько минут. После неё игра откроется сама;
-   следующие запуски сразу открывают игру.
+1. Extract `dist/gof2hd.zip` into the `ports/` directory on your game SD card.
+2. Place your own `base.apk` and one `main.*.obb` in `gof2hd/original/`.
+   Use the OBB file directly, without wrapping it in a RAR or ZIP archive.
+3. Select **Galaxy on Fire 2 HD** in the Ports menu.
+4. On first launch, wait for automatic preparation to finish. A progress bar is shown.
+   This may take a few minutes. The game starts automatically afterwards;
+   subsequent launches open the game directly.
 
-Структура установки после первого запуска:
+Installation layout after the first launch:
 
 ```text
 ports/
 ├── Galaxy on Fire 2 HD.sh
 └── gof2hd/
-    ├── original/               # оригинальные base.apk и main.*.obb
-    ├── gamedata/lib/           # подготовленные библиотеки игры
-    ├── data/                  # ресурсы и сохранения
-    └── port/run-native/        # файлы порта
+    ├── original/               # original base.apk and main.*.obb
+    ├── gamedata/lib/           # prepared game libraries
+    ├── data/                  # resources and saves
+    └── port/run-native/        # port files
 ```
 
-APK и OBB оставьте на месте: они нужны движку при каждом запуске.
-Лог запуска — `gof2hd/log.txt`. Перед обновлением закройте игру;
-сохраняйте папки `original/`, `gamedata/` и `data/`, чтобы не потерять
-оригинальные файлы и сохранения.
+Keep the APK and OBB files in place: the engine needs them on every launch.
+The launch log is `gof2hd/log.txt`. Close the game before updating;
+preserve `original/`, `gamedata/` and `data/` to keep your original files and saves.
 
-Подробные требования к файлам игры — в [port/PORTMASTER.md](port/PORTMASTER.md).
+See [port/PORTMASTER.md](port/PORTMASTER.md) (Russian) for detailed game file requirements.
 
-## 3. Управление
+## 3. Controls
 
-Геймпад заменяет сенсорное управление игры. Раскладку кнопок предоставляет
-PortMaster; проверено на H700 Gamepad с ROCKNIX.
+The gamepad replaces the game's touch controls. PortMaster supplies the button mapping;
+tested with the H700 Gamepad on ROCKNIX.
 
-Крестовина дублирует левый стик: в режиме курсора двигает курсор,
-в режиме гироскопа управляет кораблём.
+The D-pad mirrors the left stick: it moves the cursor in cursor mode
+and steers the ship in gyroscope mode.
 
-Названия кнопок соответствуют раскладке SDL/PortMaster:
+Button names follow the SDL/PortMaster mapping:
 
-| Кнопка | Эффект |
+| Button | Action |
 |---|---|
-| Левый стик / крестовина | движение курсора или управление кораблём в режиме гироскопа |
-| **A** | зарезервирована, действие временно отключено |
-| **B** | короткое касание точки `(35,345)` |
-| **Y** | касание точки `(37,287)` на время удержания |
-| **L2** | короткое касание точки `(541,446)` |
-| **L1** | свайп влево (уклонение) |
-| **R1** | свайп вправо (уклонение) |
-| **R2** | стрельба в режиме гироскопа; касание в позиции курсора в режиме курсора |
-| **Start** | переключение режимов курсора и гироскопа |
-| **X** | зарезервировано |
+| Left stick / D-pad | Move the cursor or steer the ship in gyroscope mode |
+| **A** | Reserved; action currently disabled |
+| **B** | Brief touch at `(35,345)` |
+| **Y** | Touch at `(37,287)` while held |
+| **L2** | Brief touch at `(541,446)` |
+| **L1** | Swipe left (dodge) |
+| **R1** | Swipe right (dodge) |
+| **R2** | Fire in gyroscope mode; touch at the cursor position in cursor mode |
+| **Start** | Switch between cursor and gyroscope modes |
+| **X** | Reserved |
 
-На проверенной H700/ROCKNIX выход из игры — **M + Start**.
+On the tested H700/ROCKNIX system, press **M + Start** to exit the game.
