@@ -15,7 +15,7 @@
 - поддержка контейнеров `linux/arm/v7`: на x86-64 и ARM64 нужна ARMv7-эмуляция
   QEMU/binfmt; Docker Desktop включает её по умолчанию, для Docker Engine
   на Linux её нужно настроить при отсутствии поддержки ([документация Docker](https://docs.docker.com/build/building/multi-platform/#qemu));
-- `base.apk` в корне проекта. OBB и распакованные ресурсы для сборки не нужны;
+- файлы оригинальной игры для сборки не нужны;
 - доступ к репозиториям образов и пакетов Debian при первом создании образа.
 
 Для запуска на консоли:
@@ -23,8 +23,9 @@
 - ARM Linux с поддержкой 32-битных ARMv7 hardfp-программ;
 - совместимая **glibc**, 32-битные **SDL2** и **EGL/GLES2** из прошивки;
   проверенные варианты — Mali/fbdev и ROCKNIX с Mesa/Panfrost/Wayland;
-- `base.apk`, OBB `main.<ver>.net.fishlabs.gof2hdallandroid2012.obb`,
-  распакованные ресурсы в `data/` и готовые файлы из `port/run-native/`.
+- пользовательские APK/OBB в `original/`, подготовленные библиотеки игры в
+  `gamedata/lib/`, ресурсы и сохранения в `data/`, файлы порта в `port/run-native/`.
+  Подробная установка — в [port/PORTMASTER.md](port/PORTMASTER.md).
 
 Docker, компиляторы и заголовки SDL2 на консоли для запуска не требуются.
 
@@ -32,7 +33,8 @@ Docker, компиляторы и заголовки SDL2 на консоли д
 > и оборачивает мягкие float-вызовы движка через ABI-мост в `shim/` и
 > `gles-stub/gles-bridge.c`. Движок использует только GLES2 (контекст он не
 > создаёт) — EGL для него не нужен вовсе. Патч `e_flags` в `libgof2hdaa.so`
-> делает бинарь совместимым с линкером — выполняется автоматически при сборке.
+> делает бинарь совместимым с линкером — выполняется отдельной командой
+`prepare-game.py` над копиями оригинальных библиотек.
 
 ## Ponytail для работы над проектом
 
@@ -53,7 +55,6 @@ Codex. Явный вызов: `$ponytail`, `$ponytail-review`, `$ponytail-audit`
 Все команды выполняются из корня проекта на ПК:
 
 ```sh
-# Положите свой base.apk в корень проекта.
 bash port/tools/build-docker.sh
 ```
 
@@ -73,9 +74,11 @@ CMake, Make, SDL2 dev, Python3 и unzip. Базовый образ закреп�
 
 - `gof2hd` — Linux-хост с SDL2;
 - shim-библиотеки `libc/liblog/libandroid/libm/libdl`;
-- GLES2-мост `libGLESv2.so` и аудио/ABI-хелперы;
-- движок `libgof2hdaa.so` и реальные FMOD-библиотеки из APK, пропатченные
-  для загрузки на Linux.
+- GLES2-мост `libGLESv2.so` и аудио/ABI-хелперы.
+
+Движок и FMOD из APK не входят в результат сборки. Старые копии, оставшиеся
+в `run-native/` от прежних сборок, автоматически не удаляются; скрипт упаковки
+включает только явно перечисленные файлы самого порта.
 
 Корневой `CMakeLists.txt` задаёт окружение сборки и подключает `port/`.
 Общие правила порта находятся в `port/CMakeLists.txt`, а цели компонентов —
@@ -85,8 +88,8 @@ CMake, Make, SDL2 dev, Python3 и unzip. Базовый образ закреп�
 Объекты и `compile_commands.json` находятся в
 `port/run-native/build/`. Повторите ту же команду для следующей сборки:
 CMake перекомпилирует только изменённые исходники и их зависимости.
-Библиотеки из APK извлекаются и патчатся заново; ресурсы и логи
-в `run-native/` сохраняются.
+Оригинальная игра при сборке не открывается; ресурсы, сохранения и логи
+не затрагиваются.
 
 По умолчанию используются две параллельные задачи. Чтобы изменить их число:
 
@@ -109,7 +112,7 @@ docker run --rm --platform linux/arm/v7 \
   -e GOF_JOBS=6 gof2hd-build:armhf python3 port/tools/test-cmake-build.py
 ```
 
-Проверка собирает проект, проверяет ELF/ABI, патчи движка, отсутствие тестовых хуков и C++-флаги,
+Проверка собирает проект, проверяет ELF/ABI файлов порта, отсутствие тестовых хуков и C++-флаги,
 затем повторяет сборку и проверяет отсутствие перекомпиляции и сохранность
 посторонних файлов в каталоге результата. Запуск игры на консоли проверяется отдельно.
 
@@ -125,9 +128,9 @@ docker run --rm --platform linux/arm/v7 \
   -e GOF_JOBS=6 gof2hd-build:armhf
 ```
 
-Образ содержит инструменты. Исходники и `base.apk` доступны через
-подключённый каталог; `.dockerignore` исключает их из контекста создания
-образа. Для переноса уже созданного образа на другой ПК:
+Образ содержит инструменты. Исходники доступны через подключённый каталог;
+оригинальная игра сборке не нужна. `.dockerignore` исключает исходники и
+игровые файлы из контекста создания образа. Для переноса уже созданного образа на другой ПК:
 
 ```sh
 docker save gof2hd-build:armhf | gzip > /tmp/gof2hd-build-armhf.tar.gz
@@ -138,9 +141,8 @@ docker load < /tmp/gof2hd-build-armhf.tar.gz
 ### Альтернатива: сборка на устройстве
 
 Если нужно собирать непосредственно на устройстве, положите туда исходники
-(корневой `CMakeLists.txt`, `port/`)
-и `base.apk`. Нужны ARMv7 hardfp GCC/G++, glibc dev, SDL2 dev,
-CMake >= 3.18, Make, Python3 и unzip. Из корня проекта на устройстве:
+(корневой `CMakeLists.txt`, `port/`). Нужны ARMv7 hardfp GCC/G++, glibc dev,
+SDL2 dev, CMake >= 3.18 и Make. Из корня проекта на устройстве:
 
 ```sh
 bash port/tools/build-native.sh
@@ -153,7 +155,7 @@ bash port/tools/build-native.sh
 CC=gcc CXX=g++ GOF_SYS_LIB=/usr/lib/arm-linux-gnueabihf bash port/tools/build-native.sh
 ```
 
-`GOF_OUT` задаёт каталог результата, `GOF_APK` — путь к APK, `GOF_JOBS` — число
+`GOF_OUT` задаёт каталог результата, `GOF_JOBS` — число
 параллельных задач. `CC`, `CXX`, `CFLAGS` и `GOF_SYS_LIB` задают компиляторы,
 флаги и каталог целевых библиотек. Эти переменные для `build-native.sh`
 задаются на устройстве или вручную через `docker run -e`; Docker-обёртка
@@ -161,55 +163,74 @@ CC=gcc CXX=g++ GOF_SYS_LIB=/usr/lib/arm-linux-gnueabihf bash port/tools/build-na
 Не переносите `build/` с ПК на устройство: CMake сохраняет абсолютные пути.
 При смене компилятора также нужен новый каталог `build/`.
 
-## 2. Перенос готовой сборки на консоль
+## 2. Пакет порта и оригинальная игра
 
-Для стоковой прошивки используется `/root/gof2hd`, для ROCKNIX —
-`/storage/gof2hd`. На ПК задайте адрес и путь для своей консоли:
+После сборки создайте пакет только из файлов порта:
+
+```sh
+python3 port/tools/package-portmaster.py
+```
+
+Результат — `dist/gof2hd.zip`: лаунчер, Linux-хост, библиотеки совместимости,
+инструменты подготовки и инструкция. APK, OBB, движок и FMOD, распакованные
+ресурсы, сохранения и `build/` в него не попадают. Для нестандартного каталога
+сборки используйте `--build-dir /путь/к/результату`.
+
+Распакуйте ZIP в каталог Ports консоли, затем положите свои `base.apk` и
+`main.*.obb` в `gof2hd/original/`. Например, на ROCKNIX:
 
 ```sh
 DEVICE=root@192.168.0.128
-GAME_ROOT=/root/gof2hd
-# Для ROCKNIX: GAME_ROOT=/storage/gof2hd
-ssh "$DEVICE" "mkdir -p '$GAME_ROOT/port/run-native' '$GAME_ROOT/port/tools' '$GAME_ROOT/obb' '$GAME_ROOT/data'"
-scp port/run-native/gof2hd port/run-native/*.so "$DEVICE:$GAME_ROOT/port/run-native/"
-scp port/tools/start-game.sh port/tools/start-rocknix.sh "$DEVICE:$GAME_ROOT/port/tools/"
+scp dist/gof2hd.zip "$DEVICE:/storage/roms/ports/"
+ssh "$DEVICE" 'unzip -o /storage/roms/ports/gof2hd.zip -d /storage/roms/ports'
+# Эти два файла берутся из вашей копии Android-игры:
+scp /путь/base.apk /путь/main.*.obb "$DEVICE:/storage/roms/ports/gof2hd/original/"
+ssh "$DEVICE" 'python3 /storage/roms/ports/gof2hd/port/tools/prepare-game.py /storage/roms/ports/gof2hd'
 ```
 
-Для первого запуска также перенесите `base.apk` в корень игры, OBB в `obb/`
-и распакованные ресурсы в `data/`. Движок и FMOD уже входят в собранные `.so`;
-извлекать их вручную на консоли не требуется. Каталог `build/`, исходники
-и CMake для запуска не нужны.
+Нужен Python 3.9+. Подготовку можно выполнить и на ПК в уже распакованной
+папке игры, затем перенести её на консоль. Сборка порта не требует Python на
+консоли; Python нужен только для отдельной подготовки оригинальной игры.
 
-Перед обновлением файлов остановите запущенную игру. Повторное копирование
-`gof2hd`, `.so` и скриптов обновляет сборку; сохранения и ресурсы игры
-остаются в своих каталогах. Собранные файлы требуют совместимых glibc и
-32-битных SDL2/EGL/GLES на устройстве.
+`prepare-game.py` читает оригиналы из `original/`, извлекает и патчит копии
+трёх библиотек в `gamedata/lib/`, распаковывает OBB в `data/`. Существующие
+файлы в `data/` не заменяются, оригиналы не меняются. Перед обновлением
+остановите игру. Порядок установки, состав APK, версия OBB и переход со старой
+структуры описаны в [port/PORTMASTER.md](port/PORTMASTER.md); эта инструкция
+также находится в пакете как `gof2hd/README.md`.
+
+Проверка разделения файлов и подготовки:
+
+```sh
+python3 port/tools/test-game-files.py
+```
+
+Для дополнительной проверки патчей на реальном APK задайте `GOF_TEST_APK`;
+она требует уже собранных `libc.so`/`libm.so` в `port/run-native/` или каталоге
+`GOF_OUT`. Базовые тесты не требуют оригинальной игры.
 
 ## 3. Запуск
 
 ### Через PortMaster
 
-Скопируйте `port/tools/Galaxy on Fire 2 HD.sh` в каталог `ports/` вашей
-прошивки. Рядом разместите папку `gof2hd/` с готовой сборкой и ресурсами:
+Распакуйте `dist/gof2hd.zip` в каталог `ports/`, добавьте оригиналы и выполните
+подготовку по инструкции выше. После подготовки структура будет такой:
 
 ```text
 ports/
 ├── Galaxy on Fire 2 HD.sh
 └── gof2hd/
-    ├── base.apk
-    ├── obb/main.<ver>.net.fishlabs.gof2hdallandroid2012.obb
-    ├── data/                  # уже распакованные ресурсы
-    └── port/run-native/       # gof2hd и все собранные .so, без build/
+    ├── original/               # пользовательские base.apk и main.*.obb
+    ├── gamedata/lib/           # патченные копии движка и FMOD
+    ├── data/                  # распакованные ресурсы и сохранения
+    └── port/run-native/       # только хост и библиотеки порта
 ```
 
-OBB также можно положить во вложенную папку внутри `obb/`. Запускайте
-`Galaxy on Fire 2 HD` из меню Ports. Нужны установленный PortMaster и
-совместимое 32-битное окружение ARMv7; APK/OBB лаунчер не распаковывает.
-Он получает раскладку SDL из PortMaster, подключает выход через стандартную
-комбинацию PortMaster (обычно Select + Start), ждёт завершения игры и вызывает
-`pm_finish`. Для ROCKNIX используется Wayland и по умолчанию PulseAudio.
-Лог — `gof2hd/log.txt`. Для нестандартного расположения доступны `GOF_ROOT`,
-`GOF_OBB` и `GOF_LOG`.
+Выберите `Galaxy on Fire 2 HD` в меню Ports. Лаунчер получает раскладку SDL
+из PortMaster, подключает стандартную комбинацию выхода, ждёт завершения
+игры и вызывает `pm_finish`. Для ROCKNIX используется Wayland и по умолчанию
+PulseAudio. Лог — `gof2hd/log.txt`. Для нестандартного расположения доступны
+`GOF_ROOT`, `GOF_OBB` и `GOF_LOG`.
 
 Проверка лаунчера с заглушками PortMaster, без ARM-устройства:
 
@@ -228,7 +249,8 @@ bash /root/gof2hd/port/tools/start-game.sh
 ```
 
 Скрипт ставит окружение: `SDL_AUDIODRIVER=alsa`,
-`LD_LIBRARY_PATH=.:/usr/lib32`, `GOF_SHOW_CURSOR=1` и необходимые
+`LD_LIBRARY_PATH` с каталогами `gamedata/lib`, `port/run-native` и `/usr/lib32`,
+`GOF_SHOW_CURSOR=1` и необходимые
 FMOD-совместимости (POSIX filesystem, pthread, CPU и math ABI bridge).
 Видеодрайвер SDL2 выбирает сам (без `SDL_VIDEODRIVER`).
 
@@ -243,12 +265,12 @@ cd /root/gof2hd/port/run-native
 
 export SDL_AUDIODRIVER=alsa
 export GOF_SHOW_CURSOR=1
-export LD_LIBRARY_PATH=/root/gof2hd/port/run-native:/usr/lib32
+export LD_LIBRARY_PATH=/root/gof2hd/gamedata/lib:/root/gof2hd/port/run-native:/usr/lib32
 export LD_PRELOAD=/root/gof2hd/port/run-native/libm.so:/root/gof2hd/port/run-native/libfmod_filesystem.so:/root/gof2hd/port/run-native/cpuinfo_fake.so:/root/gof2hd/port/run-native/pthread_bionic.so
 
-./gof2hd /root/gof2hd/base.apk \
-    '/root/gof2hd/obb/net.fishlabs.gof2hdallandroid2012/main.47947006.net.fishlabs.gof2hdallandroid2012.obb' \
-    /root/gof2hd/data
+./gof2hd /root/gof2hd/original/base.apk \
+    '/root/gof2hd/original/main.47947006.net.fishlabs.gof2hdallandroid2012.obb' \
+    /root/gof2hd/data/
 ```
 
 Аргументы: `<base.apk> <main.*.obb> <dataDir>`.
@@ -262,9 +284,9 @@ export LD_PRELOAD=/root/gof2hd/port/run-native/libm.so:/root/gof2hd/port/run-nat
 
 ### ROCKNIX с Mesa/Panfrost и Wayland
 
-Корень игры на ROCKNIX — `/storage/gof2hd`: положите туда `base.apk`,
-OBB в `obb/`, распакованные ресурсы в `data/`, сборку в `port/run-native/`.
-Соберите проект на ПК через Docker и перенесите готовые файлы по инструкции выше.
+Для отдельного запуска на ROCKNIX можно использовать `/storage/gof2hd`:
+положите APK/OBB в `original/`, файлы порта в `port/run-native/` и выполните
+`prepare-game.py /storage/gof2hd`. Сохранения остаются в `data/`.
 На консоли запускайте:
 
 ```sh

@@ -5,9 +5,12 @@ GOF_ROOT="${GOF_ROOT:-/storage/gof2hd}"
 RUN_DIR="$GOF_ROOT/port/run-native"
 LOG_DIR="$GOF_ROOT/logs"
 mkdir -p "$LOG_DIR"
-APK="$GOF_ROOT/base.apk"
+APK="$GOF_ROOT/original/base.apk"
+[ -f "$APK" ] || APK="$GOF_ROOT/base.apk"
+GAME_LIBS="$GOF_ROOT/gamedata/lib"
+[ -d "$GAME_LIBS" ] || GAME_LIBS="$RUN_DIR"
 DATA="$GOF_ROOT/data"
-OBB="${GOF_OBB:-$(find "$GOF_ROOT/obb" -name 'main.*.obb' -print -quit 2>/dev/null || true)}"
+OBB="${GOF_OBB:-$(find "$GOF_ROOT/original" "$GOF_ROOT/obb" -name 'main.*.obb' -print -quit 2>/dev/null || true)}"
 test -f "$APK" && test -f "$OBB" && test -x "$RUN_DIR/gof2hd" || {
     echo "Missing APK, OBB or executable under $GOF_ROOT" >&2
     exit 1
@@ -41,14 +44,14 @@ if [ "${GOF_DEBUG:-0}" = 1 ]; then
     setsid gdb -nx -q -batch \
         -ex 'set pagination off' -ex 'set startup-with-shell off' \
         -ex 'set environment GOF_GDB 1' \
-        -ex "set environment LD_LIBRARY_PATH $RUN_DIR:/usr/lib32" \
+        -ex "set environment LD_LIBRARY_PATH $GAME_LIBS:$RUN_DIR:/usr/lib32" \
         -ex "set environment LD_PRELOAD $PRELOAD" \
         -ex "set substitute-path /work $GOF_ROOT" \
         -ex run -ex 'thread apply all bt full' -ex 'info registers' \
         -ex 'info sharedlibrary' -ex 'info proc mappings' \
         --args ./gof2hd "$APK" "$OBB" "$DATA/" >"$LOG" 2>&1 </dev/null &
 else
-    setsid env LD_LIBRARY_PATH="$RUN_DIR:/usr/lib32" LD_PRELOAD="$PRELOAD" \
+    setsid env LD_LIBRARY_PATH="$GAME_LIBS:$RUN_DIR:/usr/lib32" LD_PRELOAD="$PRELOAD" \
         ./gof2hd "$APK" "$OBB" "$DATA/" >"$LOG" 2>&1 </dev/null &
 fi
 PID=$!

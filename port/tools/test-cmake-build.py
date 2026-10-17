@@ -3,7 +3,6 @@
 import json
 import os
 from pathlib import Path
-import runpy
 import struct
 import subprocess
 import tempfile
@@ -23,18 +22,11 @@ subprocess.run(command, check=True)
 compiled = ["gof2hd", "libc.so", "libm.so", "liblog.so", "libandroid.so",
             "libdl.so", "libGLESv2.so", "libOpenSLES.so", "libstdc++.so",
             "pthread_bionic.so", "cpuinfo_fake.so", "libfmod_filesystem.so"]
-for name in compiled + ["libgof2hdaa.so", "libfmodex.so", "libfmodevent.so"]:
+for name in compiled:
     data = (out / name).read_bytes()
     assert data[:6] == b"\x7fELF\x01\x01", (name, "expected ELF32 little-endian")
     assert struct.unpack_from("<H", data, 18)[0] == 40, (name, "expected ARM")
     assert struct.unpack_from("<I", data, 36)[0] & 0x600 == 0x400, (name, "expected hardfp")
-
-elf = runpy.run_path(str(tools / "patch-versions.py"))
-symbols = {s["name"]: s for s in elf["load_symbols_and_versions"](
-    (out / "libgof2hdaa.so").read_bytes())}
-assert symbols["malloc"]["versym"] == 0, "malloc must bind directly to glibc"
-for name in ["fopen", "cosf", "pthread_mutex_lock"]:
-    assert symbols[name]["versym"] > 1, (name, "must retain the shim version")
 
 commands = json.loads((out / "build/compile_commands.json").read_text())
 assert all("dobby" not in (c["file"] + c["command"]).lower() for c in commands), "Dobby must not be compiled"
@@ -52,4 +44,4 @@ with tempfile.NamedTemporaryFile(dir=out) as sentinel:
     subprocess.run(command, check=True)
     assert Path(sentinel.name).read_bytes() == b"keep runtime files"
 assert before == {p: p.stat().st_mtime_ns for p in tracked}, "unchanged code was rebuilt"
-print("PASS: ARM hardfp outputs, engine versions, no hook dependency, C++ flags, incremental build, runtime files")
+print("PASS: ARM hardfp port outputs, no hook dependency, C++ flags, incremental build, runtime files")

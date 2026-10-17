@@ -1,5 +1,10 @@
 # Original game files - kept on disk, not tracked
 /base.apk
+/original/
+/gamedata/
+/data/
+/obb/
+/dist/
 net.fishlabs.gof2hdallandroid2012.rar
 
 # Build artifacts

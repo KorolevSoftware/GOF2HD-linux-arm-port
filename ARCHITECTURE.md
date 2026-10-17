@@ -124,6 +124,10 @@ EGL-код не добавляется.
 ### FMOD compatibility — port/fmodex-stub/
 
 В runtime используются реальные libfmodex.so и libfmodevent.so из APK.
+Сборка создаёт только файлы порта в `port/run-native/`. Оригинальные APK/OBB
+пользователь кладёт в `original/`; `prepare-game.py` извлекает и патчит копии
+библиотек в `gamedata/lib/`, ресурсы распаковывает в `data/`. Исходные
+оригиналы и существующие сохранения остаются без изменений.
 Папка содержит не FMOD-заглушки, а Linux compatibility helpers:
 
 - libOpenSLES.c — OpenSL ES ABI и PCM -> SDL audio;

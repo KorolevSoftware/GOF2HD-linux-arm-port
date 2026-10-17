@@ -48,6 +48,8 @@ echo hotkey >> "$TEST_EVENTS"
     obb = game_root / "obb/package/main.123.test.obb"
     obb.parent.mkdir(parents=True)
     obb.touch()
+    for library in ("libgof2hdaa.so", "libfmodex.so", "libfmodevent.so"):
+        (run / library).touch()
     game = run / "gof2hd"
     game.write_text('''#!/bin/bash
 printf '%s\\n' "$PWD" "$@" "$SDL_GAMECONTROLLERCONFIG" "$PORT_32BIT" \
@@ -76,7 +78,7 @@ exit "${TEST_GAME_STATUS:-0}"
         captured = (root / "capture").read_text().splitlines()
         assert captured[:6] == [str(run), str(game_root / "base.apk"), str(obb),
                                 str(game_root / "data") + "/", "test-controller", "Y"]
-        assert captured[6].startswith(str(run) + ":/usr/lib32")
+        assert captured[6].startswith(str(run) + ":" + str(run) + ":/usr/lib32")
         assert captured[7] == ":".join(str(run / name) for name in (
             "libm.so", "libfmod_filesystem.so", "cpuinfo_fake.so", "pthread_bionic.so"))
         if cfw == "ROCKNIX":
@@ -91,6 +93,23 @@ exit "${TEST_GAME_STATUS:-0}"
     env["TEST_CFW"] = "test"
     assert launch().returncode == 7
     assert (root / "capture").read_text().splitlines()[8:10] == ["custom", "alsa"]
+    original = game_root / "original"
+    original.mkdir()
+    (game_root / "base.apk").rename(original / "base.apk")
+    obb = obb.rename(original / obb.name)
+    game_libs = game_root / "gamedata/lib"
+    game_libs.mkdir(parents=True)
+    for library in ("libgof2hdaa.so", "libfmodex.so", "libfmodevent.so"):
+        (game_libs / library).touch()
+    env["TEST_GAME_STATUS"] = "0"
+    assert launch().returncode == 0
+    captured = (root / "capture").read_text().splitlines()
+    assert captured[1:3] == [str(original / "base.apk"), str(obb)]
+    assert captured[6].startswith(str(game_libs) + ":" + str(run) + ":/usr/lib32")
+    (game_libs / "libfmodex.so").unlink()
+    assert launch().returncode == 1
+    assert "missing libfmodex.so" in events.read_text()
+    assert "game\n" not in events.read_text()
     obb.unlink()
     assert launch().returncode == 1
     assert "error:" in events.read_text() and "game\n" not in events.read_text()

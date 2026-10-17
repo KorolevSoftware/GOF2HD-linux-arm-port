@@ -5,7 +5,7 @@ FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595
 RUN test "$(dpkg --print-architecture)" = armhf \
     && apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        gcc g++ cmake make libsdl2-dev python3 unzip \
+        gcc g++ cmake make libsdl2-dev python3 \
     && rm -rf /var/lib/apt/lists/*
 
 ENV CC=gcc \
