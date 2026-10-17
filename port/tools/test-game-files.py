@@ -49,7 +49,7 @@ with tempfile.TemporaryDirectory(prefix="gof2hd-files-") as temporary:
     with ZipFile(output) as archive:
         files = set(archive.namelist())
         expected = {"gof2hd/port/run-native/" + name for name in pack["PORT_BINARIES"]}
-        expected.update("gof2hd/port/tools/" + name for name in pack["TOOLS"])
+        expected.update("gof2hd/port/tools/" + name for name in ("prepare-game.py", "patch-versions.py"))
         expected.update(("Galaxy on Fire 2 HD.sh", "gof2hd/README.md", "gof2hd/original/"))
         assert files == expected, files ^ expected
     previous = output.read_bytes()

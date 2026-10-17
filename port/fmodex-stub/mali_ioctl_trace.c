@@ -2,7 +2,7 @@
  * mali_ioctl_trace.so -- optional, low-overhead runtime attribution for the
  * proprietary libMali allocation path.
  *
- * Enabled only through GOF_MALI_IOCTL_TRACE=1 in start-game.sh.  It records
+ * Optional diagnostic preload, not included in the PortMaster package. It records
  * successful and failed KBASE_MEM_ALLOC / KBASE_MEM_FREE ioctls, together
  * with the direct return PC, allocation parameters, and the GPU handle
  * returned by kbase.  Allocation and free records can then be paired offline

@@ -11,7 +11,7 @@ PORT_BINARIES = (
     "libGLESv2.so", "libOpenSLES.so", "libstdc++.so", "pthread_bionic.so",
     "cpuinfo_fake.so", "libfmod_filesystem.so",
 )
-TOOLS = ("prepare-game.py", "patch-versions.py", "start-game.sh", "start-rocknix.sh")
+TOOLS = ("prepare-game.py", "patch-versions.py")
 
 
 def package_port(build, output):

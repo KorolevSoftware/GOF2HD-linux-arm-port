@@ -127,55 +127,35 @@ CURRENT_PROGRAM / ARRAY_BUFFER_BINDING / VIEWPORT), после — восста�
 
 ## 4. Сборка через Docker и запуск на устройстве
 
-Основной сценарий — сборка на ПК через Docker, затем перенос готовых файлов
-на консоль. Полные требования, команды копирования и вариант сборки на
-устройстве описаны в [README.md](README.md).
+Сборка выполняется на ПК через Docker, запуск на консоли — через PortMaster.
+Полные команды сборки и создания пакета находятся в [README.md](README.md),
+установка на карту памяти — в [port/PORTMASTER.md](port/PORTMASTER.md).
 
-На ПК, из корня проекта (`base.apk` должен лежать рядом с `Dockerfile`):
+На ПК, из корня проекта:
 
 ```sh
 bash port/tools/build-docker.sh
 ```
 
-Результат — `port/run-native/gof2hd` и `port/run-native/*.so`. Перенесите их
-на устройство вместе со скриптами запуска; CMake-кэш `port/run-native/build/`
-переносить не нужно. Для стоковой прошивки корень игры — `/root/gof2hd`,
-для ROCKNIX — `/storage/gof2hd`. APK, OBB и `data/` должны находиться
-на устройстве по структуре из README.
-
-На устройстве со стоковой прошивкой:
-
-```sh
-bash /root/gof2hd/port/tools/start-game.sh
-# Лог: tail -f /root/gof2hd/run.txt
-```
-
-Для ROCKNIX используйте `bash /storage/gof2hd/port/tools/start-rocknix.sh`.
-Docker и компиляторы на консоли для запуска не нужны.
+Результат сборки — файлы порта в `port/run-native/`. После упаковки распакуйте
+`dist/gof2hd.zip` в `ports/` на карте памяти, добавьте APK/OBB в
+`gof2hd/original/` и выберите **Galaxy on Fire 2 HD** в меню Ports.
+При первом запуске лаунчер автоматически подготовит игру; последующие запуски
+пропускают подготовку. Лог — `gof2hd/log.txt`.
+Docker и компиляторы на консоли не нужны.
 
 - `build-docker.sh` запускает ARMv7 Debian-контейнер с GCC/G++, CMake и SDL2 dev.
   Внутри `build-native.sh` запускает общую CMake-сборку: shim
   (libc/liblog/libandroid/libm/libdl), GLES2-мост, FMOD compatibility helpers
   и хост `gof2hd` с SDL2. Движок и реальные FMOD извлекаются
-  из APK; `e_flags` и версии импортов движка патчатся автоматически.
+  из APK при подготовке игры; `e_flags` и версии импортов движка патчатся автоматически.
 - `wrap_overlay.c` линкуется напрямую с целью `gof_gles`, не добавляя
   `run-native` в поиск `-l`, чтобы `-ldl` не схватил пустой стаб
   `run-native/libdl.so`. EGL остаётся ответственностью SDL2 и прошивки.
-- `start-game.sh` ставит `SDL_AUDIODRIVER=alsa`, `GOF_SHOW_CURSOR=1`,
-  `LD_LIBRARY_PATH=.:/usr/lib32` и preload-совместимости FMOD: `libm.so`,
+- Лаунчер `port/tools/Galaxy on Fire 2 HD.sh` получает раскладку из PortMaster,
+  включает курсор и подключает preload-совместимости FMOD: `libm.so`,
   `libfmod_filesystem.so`, `cpuinfo_fake.so`, `pthread_bionic.so`.
-
-Ручной запуск:
-
-```sh
-cd /root/gof2hd/port/run-native
-export SDL_AUDIODRIVER=alsa GOF_SHOW_CURSOR=1
-export LD_LIBRARY_PATH=/root/gof2hd/port/run-native:/usr/lib32
-export LD_PRELOAD=/root/gof2hd/port/run-native/libm.so:/root/gof2hd/port/run-native/libfmod_filesystem.so:/root/gof2hd/port/run-native/cpuinfo_fake.so:/root/gof2hd/port/run-native/pthread_bionic.so
-./gof2hd /root/gof2hd/base.apk \
-    '/root/gof2hd/obb/net.fishlabs.gof2hdallandroid2012/main.47947006.net.fishlabs.gof2hdallandroid2012.obb' \
-    /root/gof2hd/data
-```
+  На ROCKNIX он использует Wayland и по умолчанию PulseAudio.
 
 ## 5. Как игра работает (механика запуска)
 
@@ -308,25 +288,11 @@ attr=36, mutexattr=4, condattr=4, sem_t=16, key_t=4, once_t=4.
 - SSH из этой среды: `export SSH_ASKPASS=/tmp/opencode/askpass.sh
   SSH_ASKPASS_REQUIRE=force DISPLAY=dummy:0`.
 - git push невозможен из среды (SSH с ключом отклоняется) — пушит пользователь.
-- gdbserver (armhf): ставится apt'ом прямо на устройстве —
-  `apt-get install -y gdbserver` (Ubuntu 22.04 armhf). Запуск с нужным env:
-  ```sh
-  cd /root/gof2hd/port/run-native
-  setsid bash -c 'export GOF_FB=/dev/fb0 GOF_SHOW_CURSOR=1 SDL_AUDIODRIVER=alsa \
-    LD_LIBRARY_PATH=.:/usr/lib32 \
-    LD_PRELOAD=./libm.so:./libfmod_filesystem.so:./cpuinfo_fake.so:./pthread_bionic.so; \
-    exec gdbserver 127.0.0.1:2345 ./gof2hd base.apk main.*.obb data' \
-    >/root/gof2hd/gdblog.txt 2>&1 </dev/null &
-  ```
-  Туннель с ПК: `ssh -N -L 2345:127.0.0.1:2345 root@CONSOLE_IP` (подставьте адрес консоли).
-  Клиент (ПК, gdb-multiarch — уже стоял на Manjaro):
-  `gdb-multiarch -batch -ex 'set solib-search-path <копия run-native>' -ex
-  'target remote 127.0.0.1:2345' -ex 'continue' -ex 'bt' ./gof2hd`.
-  **Важно:** под gdbserver движок на старте ловит SIGILL в ld.so и
-  зависает — интерактивная трассировка основной игры пока не работает;
-  для постмотра crash-переписей используем краш-хендлер + /proc/self/maps.
-  core_pattern на устройстве перезаписать нельзя (readonly) — путь к
-  coredump «core» идёт в CWD процесса.
+- При ранней диагностике использовался gdbserver (armhf), но под ним движок
+  на старте ловил SIGILL в ld.so и зависал. Для разбора падений используются
+  краш-хендлер и `/proc/self/maps`; их вывод попадает в `gof2hd/log.txt`
+  при запуске через PortMaster. На проверенном устройстве `core_pattern`
+  недоступен для записи.
 - Энва-флаги отладки: `GOF_TRACE` (GL-трейс),
 
   `GOF_GDB`, `GOF_VERBOSE_JNI`, `GOF_SHOW_CURSOR` (курсор-прицел,
@@ -347,8 +313,8 @@ attr=36, mutexattr=4, condattr=4, sem_t=16, key_t=4, once_t=4.
 | GLES bridge | `gles-stub/gles-bridge.c` | softfp→hardfp GLES2 в libmali (EGL движок не использует) |
 | FMOD runtime | реальные `libfmodex.so`/`libfmodevent.so` из APK, `fmodex-stub/` | FMOD 4.44.07, OpenSL→SDL/ALSA, POSIX backend FEV/FSB, bionic pthread/CPU compatibility |
 | Патч версий | `tools/patch-versions.py` | зануляет VERSYM у не-shim импортов движка |
-| Сборка | `tools/build-docker.sh`, `CMakeLists.txt`, `tools/build-native.sh` | Docker на ПК, CMake/GCC и патчи APK |
-| Запуск | `tools/start-game.sh` | одна команда |
+| Сборка | `tools/build-docker.sh`, `CMakeLists.txt`, `tools/build-native.sh` | Docker на ПК, CMake/GCC; оригинальная игра не нужна |
+| Запуск | `port/tools/Galaxy on Fire 2 HD.sh` | лаунчер PortMaster |
 
 ## 11. FMOD-аудио: архив ранних экспериментов (2026-08-08)
 
@@ -459,8 +425,8 @@ fault-адрес = r0+0x11. Причина: `play()` с не-NULL объекто
    обязателен `extern "C"` (FMOD ссылается на НЕзамангленные имена
    `__cxa_pure_virtual` и т.п.).
 
-На этой стадии `start-game.sh` ещё содержал только часть конечного preload
-набора. Точный актуальный состав приведён в §12.5.4.
+На этой стадии использовалась только часть конечного preload-набора.
+Точный актуальный состав приведён в §12.5.4.
 
 Осталось открытым: переход игры в главное меню иногда затягивается
 (не связано с аудио-инициализацией), прогресс по кампании не проверен.
@@ -503,7 +469,7 @@ FMOD после `fread()` читает bionic `__sFILE._flags` из `FILE+12`
 в битах EOF/ERR → ложный `FMOD_ERR_FILE_EOF(22)` / `FILE_BAD(19)`.
 
 Промежуточным решением был `port/fmodex-stub/libfmod_stdio.c`, загружавшийся через LD_PRELOAD
-(первым в start-game.sh). Перехватывает `fopen/fread/fseek/ftell/fclose` и
+(первым в тогдашнем preload-наборе). Перехватывает `fopen/fread/fseek/ftell/fclose` и
 маршрутизирует по вызывающему (адрес возврата, `/proc/self/maps` через
 `open/read` — **не `dladdr`**: dladdr внутри interposed stdio на раннем старте
 валил движок):
@@ -521,12 +487,12 @@ FMOD после `fread()` читает bionic `__sFILE._flags` из `FILE+12`
 стабильно рендерит/звучит (логитип→меню, тысячи `[opensl] bq.Enqueue`).
 
 > Нюанс пути FEV: `FModSound::init()` строит путь как `appRootDir + "FMOD_GOF2.fev"`
-> (lowMemory=1). `start-game.sh` передаёт `/root/gof2hd/data/` с завершающим
-> слэшем, поэтому загружается штатный `/root/gof2hd/data/FMOD_GOF2.fev`.
+> (lowMemory=1). Лаунчер PortMaster передаёт каталог `data/` с завершающим
+> слэшем, поэтому загружается штатный `data/FMOD_GOF2.fev`.
 
-> Нюанс FSB-банков: FMOD ищет `.fsb` в каталоге FEV. Поэтому
-> `start-game.sh` создаёт в `/root/gof2hd/data/` символические ссылки на
-> исходные банки из `/root/gof2hd/data/audio/`, не копируя аудио-данные.
+> Нюанс FSB-банков: FMOD ищет `.fsb` в каталоге FEV.
+> В ранней установке в `data/` создавались символические ссылки на
+> исходные банки из `data/audio/`, чтобы не копировать аудио-данные.
 > Без этого `FMOD_EventSystem_GetEventBySystemID(mode=0)` → 23 (FILE_NOTFOUND),
 > события не создаются → «шум в динамиках», диалоги скипаются (движок не знает
 > длительности реплик). После копирования: события создаются, `Event_Start` OK,
@@ -538,16 +504,17 @@ FMOD после `fread()` читает bionic `__sFILE._flags` из `FILE+12`
 разыменование NULL архива) или SIGABRT в libpng (`Assertion 'k > 0'` в
 `src/basic/fileio.c:626`) — следствие смешивания shim (bionic) и glibc FILE в
 разных участках движка. Лечится чистой перезагрузкой консоли и повторным
-запуском (`start-game.sh`).
+запуском игры через PortMaster.
 
 ### 12.5.4. Финальная конфигурация (2026-08-11)
 
 Финальный runtime использует реальные `libfmodex.so`/`libfmodevent.so` 4.44.07
-из APK. `build-native.sh` меняет их ELF e_flags с softfp на hardfp, как и у
-движка. Музыка, эффекты, озвучка и автоматическое завершение реплик подтверждены
-на консоли.
+из APK. При подготовке `prepare-game.py` меняет их ELF e_flags с softfp на hardfp,
+как и у движка. Музыка, эффекты, озвучка и автоматическое завершение реплик
+подтверждены на консоли.
 
-`start-game.sh` запускает SDL с `SDL_AUDIODRIVER=alsa` и загружает:
+Лаунчер PortMaster выбирает на ROCKNIX `SDL_AUDIODRIVER=pulseaudio` по умолчанию;
+на остальных прошивках SDL выбирает аудиодрайвер. Для игры загружаются:
 
 1. `libm.so` - общий мост softfp→hardfp для игры и FMOD. Его preload не даёт
    unversioned math-импортам FMOD привязаться к hardfp glibc `libm.so.6`.
@@ -558,9 +525,10 @@ FMOD после `fread()` читает bionic `__sFILE._flags` из `FILE+12`
 3. `cpuinfo_fake.so` - даёт Android FMOD ожидаемые `neon/vfp` признаки CPU.
 4. `pthread_bionic.so` - переводит bionic pthread/sem layout в glibc layout.
 
-`libOpenSLES.so` принимает PCM от FMOD и отдаёт его в `SDL_QueueAudio` → ALSA.
-FSB-банки должны разрешаться рядом с FEV; launcher создаёт для них ссылки из
-`data/` в `data/audio/` перед запуском. Изолированный декодер на консоли и Android
+`libOpenSLES.so` принимает PCM от FMOD и отдаёт его в `SDL_QueueAudio`.
+FSB-банки должны разрешаться рядом с FEV: подготовщик извлекает их вместе
+в `data/`. Для уже распакованных банков в `data/audio/` лаунчер использует
+`bind_files` из PortMaster. Изолированный декодер на консоли и Android
 выдал одинаковый результат: `262144` байт PCM, диапазон `[-27401,25528]` и
 `131051` ненулевой сэмпл.
 
