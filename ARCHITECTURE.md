@@ -204,6 +204,23 @@ InputCommand pipeline.
 4. Только после этого рассматривать более крупное разделение host runtime.
 5. Не менять рабочие ABI bridges без device regression test.
 
+## Проверка сборки
+
+После создания образа командой `bash port/tools/build-docker.sh` выполните
+из корня проекта на ПК:
+
+```sh
+docker run --rm --platform linux/arm/v7 \
+  --user "$(id -u):$(id -g)" \
+  --mount "type=bind,source=$(pwd),target=/work" \
+  -e GOF_JOBS=6 gof2hd-build:armhf python3 port/tools/test-cmake-build.py
+```
+
+Проверка собирает проект, проверяет ELF/ABI файлов порта, отсутствие тестовых
+хуков и C++-флаги, затем повторяет сборку и проверяет отсутствие перекомпиляции
+и сохранность посторонних файлов в каталоге результата.
+Запуск игры на консоли проверяется отдельно по списку ниже.
+
 ## Проверка runtime-контрактов
 
 После каждого изменения проверять:
