@@ -254,7 +254,8 @@ export LD_PRELOAD=/root/gof2hd/port/run-native/libm.so:/root/gof2hd/port/run-nat
 Аргументы: `<base.apk> <main.*.obb> <dataDir>`.
 Окно — полный экран; разрешение хост берёт в пикселях framebuffer через
 `SDL_GL_GetDrawableSize` после создания GL-контекста. Эти же размеры
-используют движок, DeviceInfo и курсор.
+используют движок, DeviceInfo и курсор. Начальный размер окна берётся из
+текущего видеорежима SDL, чтобы Wayland не оставлял буфер размером 1×1.
 
 > Перед запуском закройте фронтенд/лаунчер консоли (он держит `/dev/fb0`):
 > `start-game.sh` или `/etc/init.d/launcher.sh stop`, иначе fb0 конфликтует.

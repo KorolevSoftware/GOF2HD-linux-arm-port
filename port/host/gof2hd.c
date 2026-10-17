@@ -279,7 +279,14 @@ static int sdl_video_init(void) {
     SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
-    g_win = SDL_CreateWindow("GOF2HD", 0, 0, 0, 0,
+    SDL_DisplayMode display;
+    if (SDL_GetCurrentDisplayMode(0, &display) != 0 || display.w <= 1 || display.h <= 1) {
+        fprintf(stderr, "[host] cannot get fullscreen display size: %s\n", SDL_GetError());
+        return -1;
+    }
+    /* Wayland can keep a zero-sized request at 1x1 until its first configure. */
+    g_win = SDL_CreateWindow("GOF2HD", SDL_WINDOWPOS_UNDEFINED_DISPLAY(0),
+                             SDL_WINDOWPOS_UNDEFINED_DISPLAY(0), display.w, display.h,
                              SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN_DESKTOP |
                              SDL_WINDOW_ALLOW_HIGHDPI);
     if (!g_win) {
@@ -295,8 +302,9 @@ static int sdl_video_init(void) {
         fprintf(stderr, "[host] SDL_GL_MakeCurrent: %s\n", SDL_GetError());
         return -1;
     }
+    SDL_PumpEvents();
     SDL_GL_GetDrawableSize(g_win, &g_width, &g_height);
-    if (g_width <= 0 || g_height <= 0) {
+    if (g_width <= 1 || g_height <= 1) {
         fprintf(stderr, "[host] SDL returned invalid drawable size %dx%d\n",
                 g_width, g_height);
         return -1;
