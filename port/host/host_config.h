@@ -10,7 +10,6 @@
 
 #define GOF_FRAME_PERIOD_MS     33
 
-#define GOF_GAMEPAD_NAME        "ANBERNIC"
 #define GOF_AXIS_DEADZONE       4000
 #define GOF_L2_CLICK_X          541
 #define GOF_L2_CLICK_Y          446

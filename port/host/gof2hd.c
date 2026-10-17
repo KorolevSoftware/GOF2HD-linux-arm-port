@@ -142,49 +142,21 @@ static float gyro_axis(int v) {
     return n;
 }
 
-static void add_dev_mapping(void) {
-    int n = SDL_NumJoysticks();
-    for (int i = 0; i < n; i++) {
-        const char* nm = SDL_JoystickNameForIndex(i);
-        if (!nm || !strstr(nm, GOF_GAMEPAD_NAME)) continue;
-        SDL_JoystickGUID g = SDL_JoystickGetDeviceGUID(i);
-        char guid[64];
-        SDL_JoystickGetGUIDString(g, guid, sizeof(guid));
-        char map[512];
-        snprintf(map, sizeof(map),
-            "%s,%s,"
-            "a:b0,b:b1,x:b3,y:b2,"
-            "leftshoulder:b4,rightshoulder:b5,"
-            "lefttrigger:b10,righttrigger:b11,"
-            "back:b12,start:b7,"
-            "dpup:h0.1,dpright:h0.2,dpdown:h0.4,dpleft:h0.8,"
-            "leftx:a0,lefty:a1,rightx:a2,righty:a3,"
-            "platform:Linux",
-            guid, nm);
-        if (SDL_GameControllerAddMapping(map) > 0)
-            fprintf(stderr, "[pad] added SDL GameController mapping %s (%s)\n",
-                    nm, guid);
-    }
-}
-
 static SDL_GameController* find_pad(void) {
     int n = SDL_NumJoysticks();
     for (int i = 0; i < n; i++) {
-        const char* nm = SDL_JoystickNameForIndex(i);
-        if (nm && strstr(nm, GOF_GAMEPAD_NAME)) {
-            SDL_GameController* c = SDL_GameControllerOpen(i);
-            if (c)
-                fprintf(stderr, "[pad] opened SDL GameController %s (idx %d)\n",
-                        nm, i);
-            else
-                fprintf(stderr, "[pad] cannot open SDL GameController %s: %s\n",
-                        nm, SDL_GetError());
-            return c;
+        if (!SDL_IsGameController(i)) continue;
+        SDL_GameController* c = SDL_GameControllerOpen(i);
+        if (!c) {
+            fprintf(stderr, "[pad] cannot open SDL GameController idx %d: %s\n",
+                    i, SDL_GetError());
+            continue;
         }
-    }
-    if (n > 0) {
-        SDL_GameController* c = SDL_GameControllerOpen(0);
-        if (c) fprintf(stderr, "[pad] opened fallback SDL GameController 0\n");
+        char* mapping = SDL_GameControllerMapping(c);
+        fprintf(stderr, "[pad] opened SDL GameController %s (idx %d)\n",
+                SDL_GameControllerName(c), i);
+        fprintf(stderr, "[pad] mapping: %s\n", mapping ? mapping : SDL_GetError());
+        SDL_free(mapping);
         return c;
     }
     return NULL;
@@ -398,7 +370,6 @@ int main(int argc, char** argv) {
     if (engine_bridge_initialize(&engine, g_width, g_height) != 0)
         return 1;
 
-    add_dev_mapping();
     g_pad = find_pad();
     if (g_pad)
         fprintf(stderr, "[pad] gamepad ready\n");

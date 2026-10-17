@@ -144,15 +144,13 @@ EGL-код не добавляется.
 Для host/device-конфигурации:
 
 - /tmp/gof2hd_touch;
-- имя ANBERNIC-keys и GUID;
-- raw button/axis indexes;
 - deadzone и скорость курсора;
 - имена env-переменных.
 
 Контракт конкретной Android-игры пока остаётся внутри wrap_overlay и
 engine_bridge. Если появится вторая игра, его можно вынести в отдельный
-game_contract.h. Для другой консоли сейчас меняется host_config.h и SDL
-mapping.
+game_contract.h. Раскладку контроллера для конкретной консоли предоставляет
+PortMaster/SDL; хост работает с логическими кнопками и осями SDL.
 
 ## Где хранить состояние
 

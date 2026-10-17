@@ -11,6 +11,13 @@ import tempfile
 tools = Path(__file__).resolve().parent
 out = Path(os.environ.get("GOF_OUT", tools.parent / "run-native")).resolve()
 command = ["bash", str(tools / "build-native.sh")]
+with tempfile.TemporaryDirectory(prefix="gof2hd-gamepad-") as temporary:
+    test = str(Path(temporary) / "test-gamepad")
+    subprocess.run([os.environ.get("CC", "arm-linux-gnueabihf-gcc"),
+                    "-ffunction-sections", "-fdata-sections",
+                    str(tools / "test-gamepad.c"), "-Wl,--gc-sections",
+                    "-lSDL2", "-o", test], check=True)
+    subprocess.run([test], check=True)
 subprocess.run(command, check=True)
 
 compiled = ["gof2hd", "libc.so", "libm.so", "liblog.so", "libandroid.so",
