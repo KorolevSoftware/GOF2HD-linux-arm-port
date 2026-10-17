@@ -39,12 +39,7 @@ static void dump_module_maps(void) {
     char line[512];
     static char out[512];
     while (fgets(line, sizeof(line), f)) {
-        if (strstr(line, "libgof2hdaa.so") || strstr(line, "/libc.so") ||
-            strstr(line, "/libm.so") || strstr(line, "/libGLESv2.so") ||
-            strstr(line, "/gof2hd") || strstr(line, "libfmodev") ||
-            strstr(line, "libfmodex") || strstr(line, "libOpenSLES") ||
-            strstr(line, "libSDL") || strstr(line, "pthread_bionic") ||
-            strstr(line, "cpuinfo_fake")) {
+        if (strstr(line, ".so") || strstr(line, "/gof2hd")) {
             char* nl = strchr(line, '\n');
             if (nl) *nl = 0;
             int n = snprintf(out, sizeof(out), "  map: %s\n", line);
@@ -313,28 +308,38 @@ static int sdl_video_init(void) {
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
     g_win = SDL_CreateWindow("GOF2HD", 0, 0, 0, 0,
-                             SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN_DESKTOP);
+                             SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN_DESKTOP |
+                             SDL_WINDOW_ALLOW_HIGHDPI);
     if (!g_win) {
         fprintf(stderr, "[host] SDL_CreateWindow: %s\n", SDL_GetError());
         return -1;
     }
-    SDL_GetWindowSize(g_win, &g_width, &g_height);
-    if (g_width <= 0 || g_height <= 0) {
-        fprintf(stderr, "[host] SDL returned invalid window size %dx%d\n",
-                g_width, g_height);
-        return -1;
-    }
-    g_display_width = g_width;
-    g_display_height = g_height;
     SDL_GLContext gl = SDL_GL_CreateContext(g_win);
     if (!gl) {
         fprintf(stderr, "[host] SDL_GL_CreateContext: %s\n", SDL_GetError());
         return -1;
     }
-    SDL_GL_MakeCurrent(g_win, gl);
+    if (SDL_GL_MakeCurrent(g_win, gl) != 0) {
+        fprintf(stderr, "[host] SDL_GL_MakeCurrent: %s\n", SDL_GetError());
+        return -1;
+    }
+    SDL_GL_GetDrawableSize(g_win, &g_width, &g_height);
+    if (g_width <= 0 || g_height <= 0) {
+        fprintf(stderr, "[host] SDL returned invalid drawable size %dx%d\n",
+                g_width, g_height);
+        return -1;
+    }
+    g_display_width = g_width;
+    g_display_height = g_height;
     SDL_GL_SetSwapInterval(0);
-    printf("[host] SDL window ready (video driver: %s, %dx%d fullscreen)\n",
+    printf("[host] SDL window ready (video driver: %s, %dx%d drawable pixels fullscreen)\n",
            SDL_GetCurrentVideoDriver(), g_width, g_height);
+    typedef const unsigned char* (__attribute__((pcs("aapcs-vfp"))) *GetStringFn)(unsigned int);
+    GetStringFn get_string = (GetStringFn)SDL_GL_GetProcAddress("glGetString");
+    if (get_string) {
+        printf("[host] GL vendor=%s renderer=%s version=%s\n",
+               get_string(0x1f00), get_string(0x1f01), get_string(0x1f02));
+    }
     int nj = SDL_NumJoysticks();
     fprintf(stderr, "[pad] %d joystick(s):\n", nj);
     for (int i = 0; i < nj; i++) {

@@ -1,0 +1,6 @@
+/* Android calls are unversioned (FMOD) or @LIBC (engine). Native Mesa/SDL
+ * imports @GLIBC_* must keep using glibc's actual pthread object layouts. */
+LIBC {
+    global: pthread_*; sem_*;
+    local: *;
+};

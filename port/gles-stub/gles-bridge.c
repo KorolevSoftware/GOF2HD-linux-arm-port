@@ -1,19 +1,19 @@
 /*
- * gles-bridge.c — softfp -> hardfp GLES2 bridge to libmali.
+ * gles-bridge.c — softfp -> hardfp GLES2 bridge to Mesa or libmali.
  *
  * The GOF2HD ARM engine is softfp (bionic armeabi-v7a): it passes float
- * arguments in r0-r3 / on the stack.  The device's libmali.so is hardfp
+ * arguments in r0-r3 / on the stack.  The device's native GLES is hardfp
  * (aapcs-vfp): it expects floats in s0-s15.
  *
  * This .so is built hardfp and exports every GLES2 function with
  * __attribute__((pcs("aapcs"))) so the softfp engine can call in, then
- * forwards to the hardfp libmali symbol through a pcs("aapcs-vfp")
+ * forwards to the hardfp native symbol through a pcs("aapcs-vfp")
  * function pointer.
  *
  * Only GLES2 entry points are exported: that is exactly the set the
  * engine imports (verified with readelf on libgof2hdaa.so).  EGL is
- * not used by the engine at all (it never creates a context); SDL2 gets
- * EGL from a copy of libmali.so shipped as libEGL.so.1 in run-native.
+ * not used by the engine at all (it never creates a context); SDL2 loads
+ * the platform EGL implementation and creates the context.
  *
  * Build (hardfp): arm-none-linux-gnueabihf-gcc -mfloat-abi=hard
  *   -shared -fPIC -O2 gles-bridge.c -ldl -o libGLESv2.so
@@ -51,15 +51,32 @@ static const char* gtext(unsigned int f) {
     }
 }
 
-static void* libmali(void) {
+static void* native_gles(void) {
     static void* h = 0;
-    if (!h) h = dlopen("libmali.so", RTLD_NOW | RTLD_LOCAL);
+    const char* override = getenv("GOF_GLES_LIBRARY");
+    const char* names[] = { "libGLESv2.so.2", "libmali.so", NULL };
+    if (h) return h;
+    for (int i = 0; override ? i == 0 : names[i] != NULL; ++i) {
+        const char* name = override ? override : names[i];
+        h = dlopen(name, RTLD_NOW | RTLD_LOCAL);
+        if (h) {
+            fprintf(stderr, "[gles] native provider: %s\n", name);
+            return h;
+        }
+        fprintf(stderr, "[gles] %s: %s\n", name, dlerror());
+    }
+    fprintf(stderr, "[gles] no native GLES2 provider available\n");
+    exit(1);
     return h;
 }
 
 static void* sym(void* h, const char* n) {
-    if (!h) return 0;
-    return dlsym(h, n);
+    void* p = dlsym(h, n);
+    if (!p) {
+        fprintf(stderr, "[gles] missing native entry point %s: %s\n", n, dlerror());
+        exit(1);
+    }
+    return p;
 }
 
 /* ---------------- hardfp libmali pointers ---------------- */
@@ -133,7 +150,7 @@ static __HF void (*glVertexAttribPointer_hf)(GLuint a, GLint b, GLenum c, GLbool
 static __HF void (*glViewport_hf)(GLint a, GLint b, GLsizei c, GLsizei d);
 
 static void resolve_all(void) {
-    void* h = libmali();
+    void* h = native_gles();
     *(void**)&glActiveTexture_hf = sym(h, "glActiveTexture");
     *(void**)&glAttachShader_hf = sym(h, "glAttachShader");
     *(void**)&glBindBuffer_hf = sym(h, "glBindBuffer");

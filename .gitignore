@@ -6,6 +6,7 @@ net.fishlabs.gof2hdallandroid2012.rar
 port/run/
 port/run-hf/
 port/run-native/
+port/run-mac/
 port/shim/*.so
 port/gles-stub/*.so
 port/fmodex-stub/*.so

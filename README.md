@@ -1,23 +1,32 @@
 # GOF2HD Linux Port — сборка и запуск
 
 Порт **Galaxy on Fire 2 HD** (Android ARMv7) на Linux-устройства с ARM-процессором:
-нативный рендер через аппаратный GPU (Mali), без qemu.
+нативный рендер через аппаратный GPU (Mali), без QEMU во время игры.
+Основной способ сборки — Docker на ПК; на консоль переносится готовый результат.
 
 - Актуальная архитектура и границы ответственности — в [ARCHITECTURE.md](ARCHITECTURE.md)
 - Технический отчёт «как это устроено внутри» и история ABI/FMOD-диагностики — в [GOF2HD_PORT_NOTES.md](GOF2HD_PORT_NOTES.md)
 
-## Требования к устройству
+## Требования
 
-- ARM Linux (проверено: консоль ANBERNIC, armhf, ядро с fb0)
-- **hardfp glibc** и `/usr/lib32/libmali.so` (или иная GLES2-реализация)
-- **SDL2** (32-бит armhf): бинарный `.so` в `/usr/lib32/libSDL2-2.0.so.0`,
-  заголовки `/usr/include/SDL2`; драйвер `mali` (fbdev)
-- Инструменты сборки на устройстве: `gcc`/`g++` (arm-linux-gnueabihf),
-  `python3`, `dlfcn`
-- Файлы игры на устройстве:
-  - `base.apk`
-  - `main.<ver>.net.fishlabs.gof2hdallandroid2012.obb` (ресурсы)
-  - `libgof2hdaa.so` (движок, извлечён из APK — `lib/armeabi-v7a/`)
+Для сборки на ПК:
+
+- Git и запущенный Docker;
+- поддержка контейнеров `linux/arm/v7`: на x86-64 и ARM64 нужна ARMv7-эмуляция
+  QEMU/binfmt; Docker Desktop включает её по умолчанию, для Docker Engine
+  на Linux её нужно настроить при отсутствии поддержки ([документация Docker](https://docs.docker.com/build/building/multi-platform/#qemu));
+- `base.apk` в корне проекта. OBB и распакованные ресурсы для сборки не нужны;
+- доступ к репозиториям образов и пакетов Debian при первом создании образа.
+
+Для запуска на консоли:
+
+- ARM Linux с поддержкой 32-битных ARMv7 hardfp-программ;
+- совместимая **glibc**, 32-битные **SDL2** и **EGL/GLES2** из прошивки;
+  проверенные варианты — Mali/fbdev и ROCKNIX с Mesa/Panfrost/Wayland;
+- `base.apk`, OBB `main.<ver>.net.fishlabs.gof2hdallandroid2012.obb`,
+  распакованные ресурсы в `data/` и готовые файлы из `port/run-native/`.
+
+Docker, компиляторы и заголовки SDL2 на консоли для запуска не требуются.
 
 > Движок собран с **softfp ABI** (armeabi-v7a, aapcs). Порт собирает всё в hardfp
 > и оборачивает мягкие float-вызовы движка через ABI-мост в `shim/` и
@@ -25,35 +34,156 @@
 > создаёт) — EGL для него не нужен вовсе. Патч `e_flags` в `libgof2hdaa.so`
 > делает бинарь совместимым с линкером — выполняется автоматически при сборке.
 
-## 1. Копирование исходников на устройство
+## Ponytail для работы над проектом
+
+Ponytail установлен локально: `AGENTS.md` включает режим `full` для задач
+разработки, а `.agents/skills/` содержит шесть навыков. Они доступны со
+следующего сообщения в этом проекте; если не появились в списке — перезапустите
+Codex. Явный вызов: `$ponytail`, `$ponytail-review`, `$ponytail-audit`,
+`$ponytail-debt`, `$ponytail-gain`, `$ponytail-help`.
+
+Установка состоит из проектных правил и навыков. Глобальные плагины, хуки
+и настройки пользователя не подключаются. Переключение `lite/full/ultra/off`
+действует в текущем чате; исходный help также описывает возможности полной
+плагинной установки, которые здесь не включены. Версия и лицензия —
+в `.agents/PONYTAIL.md` и `.agents/PONYTAIL-LICENSE`.
+
+## 1. Сборка на ПК через Docker (основной способ)
+
+Все команды выполняются из корня проекта на ПК:
 
 ```sh
-# на ПК (если проект не лежит на устройстве)
-scp -r port/ root@<dev-ip>:/root/gof2hd/
+# Положите свой base.apk в корень проекта.
+bash port/tools/build-docker.sh
 ```
 
-## 2. Сборка
+Скрипт создаёт или обновляет локальный образ `gof2hd-build:armhf`, подключает
+проект в `/work` и запускает `build-native.sh` внутри контейнера.
+`Dockerfile` использует Debian Bookworm для **`linux/arm/v7`** с GCC/G++,
+CMake, Make, SDL2 dev, Python3 и unzip. Базовый образ закреплён по SHA256;
+пакеты устанавливаются из репозиториев Debian при создании образа.
 
-Сборка целиком выполняется на устройстве (никакого кросскомпиля).
+Контейнер остаётся ARMv7 и на x86-64/ARM64 ПК: сборка выполняется под
+эмуляцией и создаёт файлы для ARM-консоли. Если возникает `exec format error`,
+проверьте поддержку ARMv7/binfmt в Docker.
+
+### Результат и повторная сборка
+
+Результат сохраняется на ПК в `port/run-native/`:
+
+- `gof2hd` — Linux-хост с SDL2;
+- shim-библиотеки `libc/liblog/libandroid/libm/libdl`;
+- GLES2-мост `libGLESv2.so` и аудио/ABI-хелперы;
+- движок `libgof2hdaa.so` и реальные FMOD-библиотеки из APK, пропатченные
+  для загрузки на Linux.
+
+Корневой `CMakeLists.txt` задаёт окружение сборки и подключает `port/`.
+Общие правила порта находятся в `port/CMakeLists.txt`, а цели компонентов —
+в `CMakeLists.txt` внутри `port/shim/`, `port/gles-stub/`,
+`port/fmodex-stub/` и `port/host/`.
+
+Объекты и `compile_commands.json` находятся в
+`port/run-native/build/`. Повторите ту же команду для следующей сборки:
+CMake перекомпилирует только изменённые исходники и их зависимости.
+Библиотеки из APK извлекаются и патчатся заново; ресурсы и логи
+в `run-native/` сохраняются.
+
+По умолчанию используются две параллельные задачи. Чтобы изменить их число:
 
 ```sh
-cd /root/gof2hd/port
-./tools/build-native.sh
+GOF_JOBS=6 bash port/tools/build-docker.sh
 ```
 
-Скрипт:
-- собирает shim-библиотеки (`libc/liblog/libandroid/libm/libdl`),
-- мост GLES2 (`gles-stub/gles-bridge.c` → `libGLESv2.so`, форвардит только
-  GLES в libmali; движок использует лишь GLES2 и EGL не трогает),
-- реальные FMOD-библиотеки из APK и аудио-хелперы OpenSL/POSIX,
-- хост `gof2hd` (SDL2: `-lSDL2`; модуль оверлея `host/wrap_overlay.c`
-  линкуется напрямую с собранным мостом `libGLESv2.so`),
-- патчит `e_flags` у `libgof2hdaa.so`,
-- кладёт всё в `port/run-native/`.
+Скрипт также передаёт `CFLAGS` в контейнер. `GOF_DOCKER_IMAGE` меняет имя
+локального образа. Для полной пересборки удалите только каталог
+`port/run-native/build/` и снова запустите `build-docker.sh`.
 
-> Примечание: `/usr/lib32/libEGL.so.1` на прошивке — пустышка без EGL-символов,
-> но SDL2 сам находит и грузит EGL по своим путям (в т.ч. libmali), так что
-> в `run-native` ничего для EGL класть не нужно.
+### Проверка сборки
+
+После создания образа можно запустить проверку в том же контейнере:
+
+```sh
+docker run --rm --platform linux/arm/v7 \
+  --user "$(id -u):$(id -g)" \
+  --mount "type=bind,source=$(pwd),target=/work" \
+  -e GOF_JOBS=6 gof2hd-build:armhf python3 port/tools/test-cmake-build.py
+```
+
+Проверка собирает проект, проверяет ELF/ABI, патчи движка, отсутствие тестовых хуков и C++-флаги,
+затем повторяет сборку и проверяет отсутствие перекомпиляции и сохранность
+посторонних файлов в каталоге результата. Запуск игры на консоли проверяется отдельно.
+
+### Образ и ручной запуск сборки
+
+Те же действия, что выполняет `build-docker.sh`, вручную:
+
+```sh
+docker build --platform linux/arm/v7 -t gof2hd-build:armhf .
+docker run --rm --platform linux/arm/v7 \
+  --user "$(id -u):$(id -g)" \
+  --mount "type=bind,source=$(pwd),target=/work" \
+  -e GOF_JOBS=6 gof2hd-build:armhf
+```
+
+Образ содержит инструменты. Исходники и `base.apk` доступны через
+подключённый каталог; `.dockerignore` исключает их из контекста создания
+образа. Для переноса уже созданного образа на другой ПК:
+
+```sh
+docker save gof2hd-build:armhf | gzip > /tmp/gof2hd-build-armhf.tar.gz
+# На другом ПК:
+docker load < /tmp/gof2hd-build-armhf.tar.gz
+```
+
+### Альтернатива: сборка на устройстве
+
+Если нужно собирать непосредственно на устройстве, положите туда исходники
+(корневой `CMakeLists.txt`, `port/`)
+и `base.apk`. Нужны ARMv7 hardfp GCC/G++, glibc dev, SDL2 dev,
+CMake >= 3.18, Make, Python3 и unzip. Из корня проекта на устройстве:
+
+```sh
+bash port/tools/build-native.sh
+```
+
+Скрипт по умолчанию использует `arm-linux-gnueabihf-gcc/g++` и `/usr/lib32`.
+Для ARMv7 Debian с компиляторами `gcc/g++`:
+
+```sh
+CC=gcc CXX=g++ GOF_SYS_LIB=/usr/lib/arm-linux-gnueabihf bash port/tools/build-native.sh
+```
+
+`GOF_OUT` задаёт каталог результата, `GOF_APK` — путь к APK, `GOF_JOBS` — число
+параллельных задач. `CC`, `CXX`, `CFLAGS` и `GOF_SYS_LIB` задают компиляторы,
+флаги и каталог целевых библиотек. Эти переменные для `build-native.sh`
+задаются на устройстве или вручную через `docker run -e`; Docker-обёртка
+автоматически передаёт только `GOF_JOBS` и `CFLAGS`.
+Не переносите `build/` с ПК на устройство: CMake сохраняет абсолютные пути.
+При смене компилятора также нужен новый каталог `build/`.
+
+## 2. Перенос готовой сборки на консоль
+
+Для стоковой прошивки используется `/root/gof2hd`, для ROCKNIX —
+`/storage/gof2hd`. На ПК задайте адрес и путь для своей консоли:
+
+```sh
+DEVICE=root@192.168.0.128
+GAME_ROOT=/root/gof2hd
+# Для ROCKNIX: GAME_ROOT=/storage/gof2hd
+ssh "$DEVICE" "mkdir -p '$GAME_ROOT/port/run-native' '$GAME_ROOT/port/tools' '$GAME_ROOT/obb' '$GAME_ROOT/data'"
+scp port/run-native/gof2hd port/run-native/*.so "$DEVICE:$GAME_ROOT/port/run-native/"
+scp port/tools/start-game.sh port/tools/start-rocknix.sh "$DEVICE:$GAME_ROOT/port/tools/"
+```
+
+Для первого запуска также перенесите `base.apk` в корень игры, OBB в `obb/`
+и распакованные ресурсы в `data/`. Движок и FMOD уже входят в собранные `.so`;
+извлекать их вручную на консоли не требуется. Каталог `build/`, исходники
+и CMake для запуска не нужны.
+
+Перед обновлением файлов остановите запущенную игру. Повторное копирование
+`gof2hd`, `.so` и скриптов обновляет сборку; сохранения и ресурсы игры
+остаются в своих каталогах. Собранные файлы требуют совместимых glibc и
+32-битных SDL2/EGL/GLES на устройстве.
 
 ## 3. Запуск
 
@@ -92,11 +222,35 @@ export LD_PRELOAD=/root/gof2hd/port/run-native/libm.so:/root/gof2hd/port/run-nat
 ```
 
 Аргументы: `<base.apk> <main.*.obb> <dataDir>`.
-Окно — полный экран; разрешение хост берёт из SDL
-(`SDL_CreateWindow` + `SDL_GetWindowSize`).
+Окно — полный экран; разрешение хост берёт в пикселях framebuffer через
+`SDL_GL_GetDrawableSize` после создания GL-контекста. Эти же размеры
+используют движок, DeviceInfo и курсор.
 
 > Перед запуском закройте фронтенд/лаунчер консоли (он держит `/dev/fb0`):
 > `start-game.sh` или `/etc/init.d/launcher.sh stop`, иначе fb0 конфликтует.
+
+### ROCKNIX с Mesa/Panfrost и Wayland
+
+Корень игры на ROCKNIX — `/storage/gof2hd`: положите туда `base.apk`,
+OBB в `obb/`, распакованные ресурсы в `data/`, сборку в `port/run-native/`.
+Соберите проект на ПК через Docker и перенесите готовые файлы по инструкции выше.
+На консоли запускайте:
+
+```sh
+bash /storage/gof2hd/port/tools/start-rocknix.sh
+tail -f /storage/gof2hd/logs/latest.log
+```
+
+Скрипт использует работающий Wayland-композитор, ARMv7 Mesa из `/usr/lib32`
+и PulseAudio/PipeWire. Логи каждого запуска сохраняются отдельно;
+`logs/game.pid` содержит PID. `GOF_ROOT`, `GOF_OBB` и `GOF_LOG` переопределяют
+пути. GLES-мост выбирает `libGLESv2.so.2`, затем `libmali.so`; переменная
+`GOF_GLES_LIBRARY` явно задаёт библиотеку. Хост печатает GL vendor/renderer/version,
+а при падении — регистры и адреса загруженных библиотек, включая Mesa.
+`GOF_DEBUG=1 bash port/tools/start-rocknix.sh` запускает игру под GDB:
+при сигнале сохраняет стеки всех потоков, регистры и карту памяти в тот же лог.
+Android pthread-адаптер экспортирует символы `LIBC`, чтобы системные
+Mesa/SDL с импортами `GLIBC_*` использовали собственные объекты синхронизации.
 
 ## 4. Управление — встроенный геймпад консоли (SDL2 GameController)
 
@@ -238,7 +392,7 @@ export GOF_SHOW_CURSOR=1
 | FMOD-хелперы | `fmodex-stub/` | OpenSL→SDL/ALSA, POSIX filesystem, bionic pthread и CPU compatibility |
 | OpenSL фейк | `fmodex-stub/libOpenSLES.c` | PCM-буферы FMOD → SDL2/ALSA (звук) |
 | pthread/cpuinfo | `fmodex-stub/pthread_bionic.c`, `cpuinfo_fake.c` | LD_PRELOAD: bionic pthread→glibc, фейк /proc/cpuinfo |
-| Сборка | `tools/build-native.sh` | всё на устройстве (в т.ч. копирование реальных FMOD из APK) |
+| Сборка | `Dockerfile`, `tools/build-docker.sh`, `CMakeLists.txt` | основной путь — Docker на ПК; CMake/GCC и обработка APK через `build-native.sh` |
 | Запуск | `tools/start-game.sh` | одна команда |
 | Техотчёт | `GOF2HD_PORT_NOTES.md` | ABI-детали, история решений |
 </content>

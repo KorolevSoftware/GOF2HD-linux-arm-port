@@ -1,7 +1,7 @@
 /*
  * pthread_bionic.so — translate bionic pthread/sem calls to glibc.
  *
- * The Android FMOD libs (and SDL2, and the game host) were built against
+ * The Android FMOD libs and engine were built against
  * bionic, where pthread_mutex_t=4B, pthread_cond_t=4B, sem_t=4B,
  * pthread_attr_t=24B.  glibc's are larger (24/48/16/36).  Calling glibc's
  * pthread_mutex_init on a bionic-sized slot overflows the caller's structs,
@@ -12,6 +12,8 @@
  * to a freshly malloc'd glibc object, so glibc never writes into the caller's
  * 4-byte slots.  Other pthread functions (pthread_once, pthread_self, ...)
  * are ABI-compatible and bind straight to glibc.
+ * Exports use the LIBC version node so native SDL/Mesa @GLIBC_* imports
+ * bypass this adapter and retain their native synchronization objects.
  */
 #define _GNU_SOURCE
 #include <pthread.h>

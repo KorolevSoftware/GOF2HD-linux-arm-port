@@ -104,7 +104,7 @@ az = 1.0f + ny; // engine Z (питч) = 1.0 + стик Y  (нейтраль Z=1
 CURRENT_PROGRAM / ARRAY_BUFFER_BINDING / VIEWPORT), после — восстанавливается.
 
 **ABI-последствия линковки.** `gof2hd` линкуется с мостом `libGLESv2.so`
-напрямую (полный путь в build-native.sh), без `dlopen`/`dlsym`. Но мост
+напрямую (цель `gof_gles` в `port/gles-stub/CMakeLists.txt`), без `dlopen`/`dlsym`. Но мост
 экспортирует softfp-входы (`pcs("aapcs")`), а хост hardfp => каждый прототип
 в `wrap_overlay.c` помечается `__attribute__((pcs("aapcs")))` — float-аргументы
 (`glUniform4f`, `glUniformMatrix4fv`) едут в r0–r3. Цена: потеря символа —
@@ -112,8 +112,9 @@ CURRENT_PROGRAM / ARRAY_BUFFER_BINDING / VIEWPORT), после — восста�
 
 **Грабли линковки.** Если добавить `-L"$OUT"` (run-native) в строку хоста —
 `-ldl` первым найдёт пустой стаб `run-native/libdl.so` (пустышка для движка)
-и упадёт `undefined reference to dlerror@@GLIBC_2.34`. Линковать именно
-абсолютным путём `"$OUT/libGLESv2.so"` (DT_NEEDED с полным путём).
+и упадёт `undefined reference to dlerror@@GLIBC_2.34`. CMake связывает хост
+с целью `gof_gles` по полному пути, не добавляя каталог результата в поиск
+`-l`. SONAME моста — `libGLESv2.so`, это имя сохраняется в DT_NEEDED хоста.
 
 **Движение курсора (polling).** `SDL_CONTROLLERAXISMOTION` приходит
 только пока значение оси меняется: удерживаемый в отклонении стик —
@@ -124,25 +125,42 @@ CURRENT_PROGRAM / ARRAY_BUFFER_BINDING / VIEWPORT), после — восста�
 дробный аккумулятор для плавного медленного хода (`WrawState.rem`).
 В gyro-режиме вектор уходит акселерометру, курсор не двигается.
 
-## 4. Сборка и запуск — 3 команды
+## 4. Сборка через Docker и запуск на устройстве
+
+Основной сценарий — сборка на ПК через Docker, затем перенос готовых файлов
+на консоль. Полные требования, команды копирования и вариант сборки на
+устройстве описаны в [README.md](README.md).
+
+На ПК, из корня проекта (`base.apk` должен лежать рядом с `Dockerfile`):
 
 ```sh
-# 1) скопировать порт на устройство (с ПК)
-scp -r port/ root@192.168.0.128:/root/gof2hd/
-# 2) собрать прямо на устройстве (armhf, без кросскомпилятора)
-cd /root/gof2hd/port && bash tools/build-native.sh   # ждать "== done =="
-# 3) запуск одной командой (сам гасит лаунчер, убивает старую игру, поднимает лог)
-bash /root/gof2hd/port/tools/start-game.sh
-# лог: tail -f /root/gof2hd/run.txt
+bash port/tools/build-docker.sh
 ```
 
-- Сборка идёт ТОЛЬКО на устройстве (`gcc/g++ arm-linux-gnueabihf`, SDL2 dev
-  в системе). `build-native.sh` собирает: shim (libc/liblog/libandroid/libm/libdl),
-  GLES+EGL мост (`gles-bridge.c` → `libGLESv2.so`; EGL — SDL находит сам),
-  FMOD runtime-библиотеки и compatibility helpers, хост `gof2hd` (`-lSDL2`; `wrap_overlay.c` линкуется
-  напрямую с `run-native/libGLESv2.so` по полному пути — НЕ через `-L`,
-  чтобы каталог run-native не попал в поиск `-l` и `-ldl` не схватил
-  пустой стаб `run-native/libdl.so`), патчит e_flags игры soft→hardfp.
+Результат — `port/run-native/gof2hd` и `port/run-native/*.so`. Перенесите их
+на устройство вместе со скриптами запуска; CMake-кэш `port/run-native/build/`
+переносить не нужно. Для стоковой прошивки корень игры — `/root/gof2hd`,
+для ROCKNIX — `/storage/gof2hd`. APK, OBB и `data/` должны находиться
+на устройстве по структуре из README.
+
+На устройстве со стоковой прошивкой:
+
+```sh
+bash /root/gof2hd/port/tools/start-game.sh
+# Лог: tail -f /root/gof2hd/run.txt
+```
+
+Для ROCKNIX используйте `bash /storage/gof2hd/port/tools/start-rocknix.sh`.
+Docker и компиляторы на консоли для запуска не нужны.
+
+- `build-docker.sh` запускает ARMv7 Debian-контейнер с GCC/G++, CMake и SDL2 dev.
+  Внутри `build-native.sh` запускает общую CMake-сборку: shim
+  (libc/liblog/libandroid/libm/libdl), GLES2-мост, FMOD compatibility helpers
+  и хост `gof2hd` с SDL2. Движок и реальные FMOD извлекаются
+  из APK; `e_flags` и версии импортов движка патчатся автоматически.
+- `wrap_overlay.c` линкуется напрямую с целью `gof_gles`, не добавляя
+  `run-native` в поиск `-l`, чтобы `-ldl` не схватил пустой стаб
+  `run-native/libdl.so`. EGL остаётся ответственностью SDL2 и прошивки.
 - `start-game.sh` ставит `SDL_AUDIODRIVER=alsa`, `GOF_SHOW_CURSOR=1`,
   `LD_LIBRARY_PATH=.:/usr/lib32` и preload-совместимости FMOD: `libm.so`,
   `libfmod_filesystem.so`, `cpuinfo_fake.so`, `pthread_bionic.so`.
@@ -173,7 +191,7 @@ Android-приложение = Java-обёртка + нативный `libgof2hd
 6. `setCountryCodeOfDevice(0)`
 7. `SetOrigamiSuperClub("...")` — иначе краш в SHA256 (NULL-указатель)
 8. `initialize(w,h)` → `resize(w,h)` — w/h = разрешение экрана,
-   полученное от SDL (полный экран, `SDL_GetWindowSize`)
+   полученное от SDL в пикселях framebuffer (полный экран, `SDL_GL_GetDrawableSize`)
 9. Цикл: `renderstep(now_ms())` каждые ~33 мс
 
 **Проверенные факты:**
@@ -277,8 +295,8 @@ attr=36, mutexattr=4, condattr=4, sem_t=16, key_t=4, once_t=4.
 
 ## 8. Нюансы проекта (уже учтено в коде)
 
-- Сборка только на устройстве: старые кроссприйл-скрипты, софт-GLES стаб,
-  viewer и виртуальный uinput-геймпад **удалены** из репозитория.
+- Основная сборка — Docker/CMake/GCC на ПК. Старые кросс-сборочные скрипты,
+  софт-GLES стаб, viewer и виртуальный uinput-геймпад **удалены** из репозитория.
 - В `gof2hd.c` убран костыль `legacy_sscanf` (glibc 2.35 — обычный `sscanf`
   допустим; в коде снова `sscanf("%d %d %d %d", ...)`).
 
@@ -329,7 +347,7 @@ attr=36, mutexattr=4, condattr=4, sem_t=16, key_t=4, once_t=4.
 | GLES bridge | `gles-stub/gles-bridge.c` | softfp→hardfp GLES2 в libmali (EGL движок не использует) |
 | FMOD runtime | реальные `libfmodex.so`/`libfmodevent.so` из APK, `fmodex-stub/` | FMOD 4.44.07, OpenSL→SDL/ALSA, POSIX backend FEV/FSB, bionic pthread/CPU compatibility |
 | Патч версий | `tools/patch-versions.py` | зануляет VERSYM у не-shim импортов движка |
-| Сборка | `tools/build-native.sh` | всё на устройстве |
+| Сборка | `tools/build-docker.sh`, `CMakeLists.txt`, `tools/build-native.sh` | Docker на ПК, CMake/GCC и патчи APK |
 | Запуск | `tools/start-game.sh` | одна команда |
 
 ## 11. FMOD-аудио: архив ранних экспериментов (2026-08-08)

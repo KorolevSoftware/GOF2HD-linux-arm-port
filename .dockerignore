@@ -1,0 +1,5 @@
+# The image contains the toolchain only. Sources and game files are mounted
+# when running it, so keep APK/OBB, archives and build output out of context.
+**
+!Dockerfile
+!.dockerignore
