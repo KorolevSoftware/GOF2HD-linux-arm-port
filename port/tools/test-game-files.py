@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Check package separation and safe preparation; real APK integration is optional."""
 import hashlib
+import contextlib
+import io
 import os
 from pathlib import Path
 import runpy
@@ -96,6 +98,19 @@ with tempfile.TemporaryDirectory(prefix="gof2hd-files-") as temporary:
         for name in prepare["GAME_LIBRARIES"]:
             archive.writestr("lib/armeabi-v7a/" + name, b"not an ELF")
     expect_failure(root, "ARMv7 ELF32")
+    (original / "libgof2hdaa.so").write_bytes(header)
+    expect_failure(root, "Extract all three")
+    for name in prepare["GAME_LIBRARIES"]:
+        (original / name).write_bytes(header)
+    write_obb(obb, [("../escape", b"bad")])
+    # Valid loose ELF headers must take precedence over the invalid ones in the APK.
+    expect_failure(root, "Unsafe OBB path")
+    for name in prepare["GAME_LIBRARIES"]:
+        (original / name).write_bytes(b"not an ELF")
+    expect_failure(root, "ARMv7 ELF32")
+    for name in prepare["GAME_LIBRARIES"]:
+        (original / name).unlink()
+    write_obb(obb)
 
     real_apk = os.environ.get("GOF_TEST_APK")
     if real_apk:
@@ -115,7 +130,9 @@ with tempfile.TemporaryDirectory(prefix="gof2hd-files-") as temporary:
         shutil.copyfileobj = fail_copy
         try:
             try:
-                prepare["prepare_game"](root)
+                failed_progress = io.StringIO()
+                with contextlib.redirect_stdout(failed_progress):
+                    prepare["prepare_game"](root, progress=True)
             except OSError as error:
                 assert "simulated" in str(error)
             else:
@@ -123,10 +140,25 @@ with tempfile.TemporaryDirectory(prefix="gof2hd-files-") as temporary:
         finally:
             shutil.copyfileobj = copy
         assert not (root / "data/FMOD_GOF2.fev").exists()
+        assert "GOF_PROGRESS 0" in failed_progress.getvalue()
+        assert "GOF_PROGRESS 100" not in failed_progress.getvalue()
         assert list((root / "data").glob(".prepare-*")) == []
         assert save.read_bytes() == b"keep progress"
-        for _ in range(2):
-            prepare["prepare_game"](root)
+        legacy_binaries = {}
+        for use_extracted in (False, True, True):
+            if use_extracted and not (original / "libgof2hdaa.so").exists():
+                with ZipFile(apk) as archive:
+                    for name in prepare["GAME_LIBRARIES"]:
+                        path = original / name
+                        path.write_bytes(archive.read("lib/armeabi-v7a/" + name))
+                        original_hashes[path] = hashlib.sha256(path.read_bytes()).digest()
+            progress_log = io.StringIO()
+            with contextlib.redirect_stdout(progress_log):
+                prepare["prepare_game"](root, progress=True)
+            percentages = [int(line.split()[1]) for line in progress_log.getvalue().splitlines()
+                           if line.startswith("GOF_PROGRESS ")]
+            assert percentages[0] == 0 and percentages[-1] == 100, percentages
+            assert percentages == sorted(set(percentages)), percentages
             assert save.read_bytes() == b"keep progress"
             assert (root / "data/FMOD_GOF2.fev").read_bytes() == b"fev"
             assert (root / "data/bank.fsb").read_bytes() == b"bank"
@@ -138,13 +170,17 @@ with tempfile.TemporaryDirectory(prefix="gof2hd-files-") as temporary:
                 binary = (root / "gamedata/lib" / name).read_bytes()
                 assert struct.unpack_from("<I", binary, 36)[0] & 0x600 == 0x400
                 assert not (runtime / name).exists()
+                if use_extracted:
+                    assert binary == legacy_binaries[name]
+                else:
+                    legacy_binaries[name] = binary
         elf = runpy.run_path(str(tools / "patch-versions.py"))
         symbols = {s["name"]: s for s in elf["load_symbols_and_versions"](
             (root / "gamedata/lib/libgof2hdaa.so").read_bytes())}
         assert symbols["malloc"]["versym"] == 0
         for name in ("fopen", "cosf", "pthread_mutex_lock"):
             assert symbols[name]["versym"] > 1, name
-        print("PASS: real APK ABI patches, resource layout, repeat preparation, original files and saves")
+        print("PASS: loose libraries and APK fallback produce identical patches; originals, resources and saves preserved")
     else:
         print("SKIP: real APK integration (set GOF_TEST_APK and build the port first)")
 

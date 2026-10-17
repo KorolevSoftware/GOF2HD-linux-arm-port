@@ -33,16 +33,37 @@ launch_game() {
         return 1
     fi
     exec > >(tee "${GOF_LOG:-$GAMEDIR/log.txt}") 2>&1
-    if [ ! -f "$APK" ] || [ ! -f "$OBB" ] || [ ! -d "$DATA" ] || [ ! -f "$RUN_DIR/gof2hd" ]; then
-        pm_show_error "GOF2HD: put base.apk and main.*.obb in original/, then run: python3 $GAMEDIR/port/tools/prepare-game.py $GAMEDIR"
+    if [ ! -f "$APK" ] || [ ! -f "$OBB" ]; then
+        pm_show_error "GOF2HD: put base.apk and one main.*.obb in $GAMEDIR/original/"
         return 1
     fi
+    if [ ! -f "$RUN_DIR/gof2hd" ]; then
+        pm_show_error "GOF2HD: missing port executable: $RUN_DIR/gof2hd"
+        return 1
+    fi
+    needs_prepare=0
+    [ -f "$DATA/FMOD_GOF2.fev" ] || needs_prepare=1
     for library in libgof2hdaa.so libfmodex.so libfmodevent.so; do
-        if [ ! -f "$GAME_LIBS/$library" ]; then
-            pm_show_error "GOF2HD: missing $library. Run: python3 $GAMEDIR/port/tools/prepare-game.py $GAMEDIR"
+        [ -f "$GAME_LIBS/$library" ] || needs_prepare=1
+    done
+    if [ "$needs_prepare" = 1 ]; then
+        if ! command -v python3 >/dev/null 2>&1; then
+            pm_show_error "GOF2HD: Python 3.9+ is required for first-run preparation. Prepare the game on your PC with port/tools/prepare-game.py."
             return 1
         fi
-    done
+        pm_message "GOF2HD: preparing game files. First launch may take several minutes. Please wait."
+        python3 "$GAMEDIR/port/tools/prepare-game.py" "$GAMEDIR" --progress | while IFS= read -r line; do
+            case "$line" in
+                "GOF_PROGRESS "*) PortMasterDialog "progress" "Preparing game resources" "${line#GOF_PROGRESS }" 100 ;;
+                *) printf '%s\n' "$line" ;;
+            esac
+        done
+        if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+            pm_show_error "GOF2HD: preparation failed. Check original/ files, free disk space and $GAMEDIR/log.txt, then launch again."
+            return 1
+        fi
+        GAME_LIBS="$GAMEDIR/gamedata/lib"
+    fi
     cd "$RUN_DIR" || return 1
     chmod +x ./gof2hd || return 1
 
