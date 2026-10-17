@@ -122,9 +122,9 @@ Button names follow the SDL/PortMaster mapping:
 |---|---|
 | Left stick / D-pad | Move the cursor or steer the ship in gyroscope mode |
 | **A** | Reserved; action currently disabled |
-| **B** | Brief touch at `(35,345)` |
-| **Y** | Touch at `(37,287)` while held |
-| **L2** | Brief touch at `(541,446)` |
+| **B** | Autopilot |
+| **Y** | Fast-forward time |
+| **L2** | Fire secondary weapon |
 | **L1** | Swipe left (dodge) |
 | **R1** | Swipe right (dodge) |
 | **R2** | Fire in gyroscope mode; touch at the cursor position in cursor mode |
