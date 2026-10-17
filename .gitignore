@@ -5,7 +5,7 @@
 /data/
 /obb/
 /dist/
-net.fishlabs.gof2hdallandroid2012.rar
+main.*.net.fishlabs.*.obb
 
 # Build artifacts
 port/run/
