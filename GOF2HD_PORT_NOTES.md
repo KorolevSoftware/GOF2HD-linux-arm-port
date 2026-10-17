@@ -128,7 +128,7 @@ CURRENT_PROGRAM / ARRAY_BUFFER_BINDING / VIEWPORT), после — восста�
 ## 4. Сборка через Docker и запуск на устройстве
 
 Сборка выполняется на ПК через Docker, запуск на консоли — через PortMaster.
-Полные команды сборки и создания пакета находятся в [README.md](README.md),
+Полные команды сборки и создания пакета находятся в [build.md](build.md#русский),
 установка на карту памяти — в [port/PORTMASTER.md](port/PORTMASTER.md).
 
 На ПК, из корня проекта:
