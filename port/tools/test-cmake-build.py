@@ -17,6 +17,13 @@ with tempfile.TemporaryDirectory(prefix="gof2hd-gamepad-") as temporary:
                     str(tools / "test-gamepad.c"), "-Wl,--gc-sections",
                     "-lSDL2", "-o", test], check=True)
     subprocess.run([test], check=True)
+    test = str(Path(temporary) / "test-engine-bridge")
+    subprocess.run([os.environ.get("CC", "arm-linux-gnueabihf-gcc"),
+                    "-ffunction-sections", "-fdata-sections",
+                    str(tools / "test-engine-bridge.c"),
+                    str(tools.parent / "host/jni.c"),
+                    "-Wl,--gc-sections", "-ldl", "-o", test], check=True)
+    subprocess.run([test], check=True)
 subprocess.run(command, check=True)
 
 compiled = ["gof2hd", "libc.so", "libm.so", "liblog.so", "libandroid.so",

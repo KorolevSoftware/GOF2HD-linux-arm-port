@@ -35,6 +35,12 @@ typedef struct EngineBridge {
         (JNIEnv*, jclass, jfloat, jfloat, jfloat);
     void (*set_origami_super_club)(JNIEnv*, jclass, jstring);
     void (*backbutton)(JNIEnv*, jclass);
+    void (*iap_bought_premium)(JNIEnv*, jclass, jint, jint);
+    void (*iap_bought_consumable)(JNIEnv*, jclass, jint);
+    jstring (*get_consumable_sku)(JNIEnv*, jclass, jint);
+    void (*set_item_information)(JNIEnv*, jclass, jarray, jarray, jarray, jarray, jarray);
+    jint (*get_dlc_bought[5])(JNIEnv*, jclass);
+    int purchases_restored;
 } EngineBridge;
 
 int engine_bridge_load(EngineBridge* bridge);

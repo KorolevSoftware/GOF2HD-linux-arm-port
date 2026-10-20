@@ -67,6 +67,15 @@ int engine_bridge_load(EngineBridge* bridge) {
     SYM(reset_screenshot_flag, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_resetScreenshotFlag");
     SYM(handle_touch_event, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_handleTouchEvent");
     SYM(handle_accelerometer, "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_handleAccelerometer");
+    SYM(iap_bought_premium, "Java_net_fishlabs_googleplay_ToJNI_iapBoughtPremium");
+    SYM(iap_bought_consumable, "Java_net_fishlabs_googleplay_ToJNI_iapBoughtConsumable");
+    SYM(get_consumable_sku, "Java_net_fishlabs_googleplay_ToJNI_gof2hd2012getConsumableSKU");
+    SYM(set_item_information, "Java_net_fishlabs_googleplay_ToJNI_iapSetNativeItemInformationList");
+    SYM(get_dlc_bought[0], "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_getDLC1BOUGHT");
+    SYM(get_dlc_bought[1], "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_getDLC2BOUGHT");
+    SYM(get_dlc_bought[2], "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_getDLC3BOUGHT");
+    SYM(get_dlc_bought[3], "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_getDLC4BOUGHT");
+    SYM(get_dlc_bought[4], "Java_net_fishlabs_gof2hdallandroid2012_ToJNI_getDLC5BOUGHT");
 #undef SYM
 
     bridge->backbutton = (typeof(bridge->backbutton))dlsym(
@@ -74,6 +83,28 @@ int engine_bridge_load(EngineBridge* bridge) {
     bridge->set_origami_super_club = (typeof(bridge->set_origami_super_club))dlsym(
         handle, "Java_net_fishlabs_gof2hdallandroid2012_GOF2HD2012_SetOrigamiSuperClub");
     return 0;
+}
+
+static void configure_credit_store(EngineBridge* bridge) {
+    fake_jstring descriptions[] = {
+        {"100.000 $"}, {"300.000 $"}, {"1.000.000 $"},
+        {"3.000.000 $"}, {"10.000.000 $"}
+    };
+    fake_jstring zero = {"0"}, currency = {""};
+    jobject skus[5], amounts[5], prices[5], currencies[5];
+    fake_jarray ids = {5, skus}, desc = {5, amounts};
+    fake_jarray price = {5, prices}, curr = {5, currencies};
+    for (int i = 0; i < 5; ++i) {
+        skus[i] = bridge->get_consumable_sku(bridge->env, bridge->cls, i);
+        amounts[i] = (jobject)&descriptions[i];
+        prices[i] = (jobject)&zero;
+        currencies[i] = (jobject)&currency;
+    }
+    /* The native catalog callback copies the strings into engine-owned storage. */
+    bridge->set_item_information(bridge->env, bridge->cls,
+                                (jarray)&ids, (jarray)&desc, (jarray)&desc,
+                                (jarray)&curr, (jarray)&price);
+    for (int i = 0; i < 5; ++i) free(skus[i]);
 }
 
 int engine_bridge_configure(EngineBridge* bridge,
@@ -110,6 +141,7 @@ int engine_bridge_configure(EngineBridge* bridge,
                                        (jobject)&fake_context);
     printf("[host] setCountryCodeOfDevice(0)\n");
     bridge->set_country_code(bridge->env, bridge->cls, 0);
+    configure_credit_store(bridge);
 
     if (bridge->set_origami_super_club) {
         printf("[host] setOrigamiSuperClub(...)\n");
@@ -129,8 +161,30 @@ int engine_bridge_initialize(EngineBridge* bridge, int width, int height) {
 }
 
 void engine_bridge_render(EngineBridge* bridge, jlong now_ms) {
-    if (bridge && bridge->renderstep)
-        bridge->renderstep(bridge->env, bridge->cls, now_ms);
+    if (!bridge || !bridge->renderstep) return;
+    bridge->renderstep(bridge->env, bridge->cls, now_ms);
+
+    /* Defer the callback/autosave until the engine has finished its frame. */
+    jint credit_pack = jni_take_credit_purchase();
+    if (credit_pack >= 0) {
+        bridge->iap_bought_consumable(bridge->env, bridge->cls, credit_pack);
+        fprintf(stderr, "[iap] granted credit pack %d\n", credit_pack + 1);
+    }
+
+    /* The engine loads its purchase flags during startup, before the main menu. */
+    if (!bridge->purchases_restored && engine_bridge_in_main_menu(bridge)) {
+        static const char* const packages[] = {
+            "Valkyrie", "Kaamo Club", "Supernova", "VIP", "Full package"
+        };
+        for (int i = 0; i < 5; ++i) {
+            if (!bridge->get_dlc_bought[i](bridge->env, bridge->cls)) {
+                bridge->iap_bought_premium(bridge->env, bridge->cls, i, 1);
+                fprintf(stderr, "[iap] restored %s: %d\n", packages[i],
+                        bridge->get_dlc_bought[i](bridge->env, bridge->cls));
+            }
+        }
+        bridge->purchases_restored = 1;
+    }
 }
 
 int engine_bridge_exit_flag(EngineBridge* bridge) {

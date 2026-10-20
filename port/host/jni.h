@@ -132,12 +132,16 @@ typedef JavaVM_ JavaVM;
 typedef struct fake_jstring { const char* utf; } fake_jstring;
 typedef struct fake_jclass { const char* name; } fake_jclass;
 typedef struct fake_jmethod { const char* class_name; const char* name; const char* sig; } fake_jmethod;
+typedef struct fake_jarray { jint length; const jobject* elements; } fake_jarray;
 
 extern JNIEnv g_env;
 extern JavaVM g_vm;
 
 /* create a fake jstring from a C string (host side) */
 jstring mk_jstring(const char* utf);
+
+/* Return one requested credit pack index, or -1 when none is pending. */
+jint jni_take_credit_purchase(void);
 
 /* config injected by host */
 extern int g_display_width;

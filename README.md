@@ -47,6 +47,14 @@ preserve `original/`, `gamedata/` and `data/` to keep your original files and sa
 
 See [port/PORTMASTER.md](port/PORTMASTER.md) (Russian) for detailed game file requirements.
 
+The port emulates purchase restoration locally. On reaching the main menu for
+the first time each launch, it unlocks Valkyrie, Kaamo Club, Supernova, VIP and
+the full package through the engine's purchase interface. Google Play and an
+internet connection are not needed. The in-game store offers free packs of
+100,000, 300,000, 1,000,000, 3,000,000 and 10,000,000 credits. Select a pack to
+receive its amount through the engine with autosave; packs can be obtained
+repeatedly. Story requirements for missions still apply.
+
 ## 2. Controls
 
 The gamepad replaces the game's touch controls. PortMaster supplies the button mapping;

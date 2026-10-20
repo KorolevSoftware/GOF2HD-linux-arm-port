@@ -17,11 +17,24 @@ _Static_assert(OFF(CallStaticIntMethod) == 129 * sizeof(void*), "CallStaticIntMe
 _Static_assert(OFF(CallStaticVoidMethod) == 141 * sizeof(void*), "CallStaticVoidMethod idx");
 _Static_assert(OFF(GetStringUTFChars) == 169 * sizeof(void*), "GetStringUTFChars idx");
 _Static_assert(OFF(ReleaseStringUTFChars) == 170 * sizeof(void*), "ReleaseStringUTFChars idx");
+_Static_assert(OFF(GetArrayLength) == 171 * sizeof(void*), "GetArrayLength idx");
+_Static_assert(OFF(GetObjectArrayElement) == 173 * sizeof(void*), "GetObjectArrayElement idx");
 
 /* Set by the SDL host after the fullscreen window has been created. */
 int g_display_width;
 int g_display_height;
 int g_jni_verbose = 0;
+static unsigned int credit_purchases[5];
+
+jint jni_take_credit_purchase(void) {
+    for (int i = 0; i < 5; ++i) {
+        if (credit_purchases[i]) {
+            --credit_purchases[i];
+            return i;
+        }
+    }
+    return -1;
+}
 
 static void jlog(const char* fmt, ...) {
     if (!g_jni_verbose) return;
@@ -64,6 +77,18 @@ static jint GetStringUTFLength(JNIEnv* env, jstring s) {
     (void)env;
     fake_jstring* f = (fake_jstring*)s;
     return f && f->utf ? (jint)strlen(f->utf) : 0;
+}
+
+static jint GetArrayLength(JNIEnv* env, jarray array) {
+    (void)env;
+    fake_jarray* a = (fake_jarray*)array;
+    return a ? a->length : 0;
+}
+
+static jobject GetObjectArrayElement(JNIEnv* env, jarray array, jint index) {
+    (void)env;
+    fake_jarray* a = (fake_jarray*)array;
+    return a && index >= 0 && index < a->length ? a->elements[index] : NULL;
 }
 
 static const char* GetStringUTFChars(JNIEnv* env, jstring s, jboolean* isCopy) {
@@ -129,6 +154,20 @@ static void CallStaticVoidMethod(JNIEnv* env, jclass clazz, jmethodID mid, ...) 
     fake_jclass* c = (fake_jclass*)clazz;
     fake_jmethod* m = (fake_jmethod*)mid;
     jlog("[jni] CallStaticVoidMethod(%s.%s)\n", c ? c->name : "?", m ? m->name : "?");
+    if (!m || !m->class_name || !m->name || !m->sig ||
+        strcmp(m->class_name, "net/fishlabs/gof2hdallandroid2012/NativeFunctionCalls") != 0 ||
+        strcmp(m->sig, "()V") != 0) return;
+    static const char* const methods[] = {
+        "iap_buy_credits_100_000", "iap_buy_credits_300_000",
+        "iap_buy_credits_1_000_000", "iap_buy_credits_3_000_000",
+        "iap_buy_credits_10_000_000"
+    };
+    for (int i = 0; i < 5; ++i) {
+        if (strcmp(m->name, methods[i]) == 0) {
+            ++credit_purchases[i];
+            return;
+        }
+    }
 }
 
 static jint CallStaticIntMethod(JNIEnv* env, jclass clazz, jmethodID mid, ...) {
@@ -373,9 +412,9 @@ static const JNINativeInterface_ g_iface = {
     /* GetStringUTFLength */ (void*)GetStringUTFLength,
     /* GetStringUTFChars */ (void*)GetStringUTFChars,
     /* ReleaseStringUTFChars */ (void*)ReleaseStringUTFChars,
-    /* GetArrayLength */ (void*)jni_default,
+    /* GetArrayLength */ (void*)GetArrayLength,
     /* NewObjectArray */ (void*)jni_default,
-    /* GetObjectArrayElement */ (void*)jni_default,
+    /* GetObjectArrayElement */ (void*)GetObjectArrayElement,
     /* SetObjectArrayElement */ (void*)jni_default_v,
     /* NewBooleanArray */ (void*)jni_default,
     /* NewByteArray */ (void*)jni_default,
